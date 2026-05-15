@@ -40,6 +40,11 @@ void garden_nav_init(lv_obj_t *screen) {
     s_nav.home_index = GARDEN_NAV_HOME_INDEX;
     s_nav.current    = s_nav.home_index;
 
+    /* Screen-level styling (was in old build_layout, required for correct rendering) */
+    lv_obj_set_style_bg_color(screen, lv_color_hex(0x1A3A1A), 0);
+    lv_obj_set_style_pad_all(screen, 0, 0);
+    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
+
     /* Nav layer intercepts all touch drag on the screen */
     lv_obj_add_event_cb(screen, nav_drag_cb, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(screen, nav_drag_cb, LV_EVENT_PRESSING, NULL);
