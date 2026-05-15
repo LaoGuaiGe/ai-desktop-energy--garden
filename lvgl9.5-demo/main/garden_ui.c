@@ -274,7 +274,7 @@ static void build_layout(void) {
     lv_obj_t *l_sun = lv_label_create(w_card);
     lv_label_set_text(l_sun, "* 26 C");
     lv_obj_set_style_text_color(l_sun, lv_color_hex(0xFFDD44), 0);
-    lv_obj_set_style_text_font(l_sun, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(l_sun, &lv_font_montserrat_14, 0);
 
     lv_obj_t *l_weather = lv_label_create(w_card);
     lv_label_set_text(l_weather, "Sunny");
@@ -321,7 +321,7 @@ static void build_layout(void) {
     lv_obj_t *l_time = lv_label_create(t_card);
     lv_label_set_text(l_time, "14:32");
     lv_obj_set_style_text_color(l_time, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(l_time, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(l_time, &lv_font_montserrat_14, 0);
     lv_obj_center(l_time);
 
     /* ── Center scene canvas ── */
@@ -377,7 +377,7 @@ static void build_layout(void) {
     s_label_level = lv_label_create(p_card);
     lv_label_set_text(s_label_level, "Lv.3 MATURE");
     lv_obj_set_style_text_color(s_label_level, lv_color_hex(0xFFDD44), 0);
-    lv_obj_set_style_text_font(s_label_level, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(s_label_level, &lv_font_montserrat_14, 0);
 
     lv_obj_t *stage_lbl = lv_label_create(p_card);
     lv_label_set_text(stage_lbl, ". > .. > ... > [*] > ** > ***");
@@ -449,7 +449,7 @@ static void build_layout(void) {
     lv_obj_t *btn_lbl = lv_label_create(btn);
     lv_label_set_text(btn_lbl, "~ WATER ~");
     lv_obj_set_style_text_color(btn_lbl, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_style_text_font(btn_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(btn_lbl, &lv_font_montserrat_14, 0);
     lv_obj_center(btn_lbl);
 
     /* Daily tip */
