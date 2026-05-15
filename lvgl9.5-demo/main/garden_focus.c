@@ -1,5 +1,6 @@
 #include "garden_focus.h"
 #include <stdio.h>
+#include <string.h>
 
 #define DISP_W         1280
 #define DISP_H         452
