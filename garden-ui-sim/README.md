@@ -100,21 +100,13 @@ garden-ui-sim/
 
 ## 移植到 ESP32-P4
 
-只需复制 `garden_ui.c` 和 `garden_ui.h` 到 ESP32-P4 工程，在 `app_main.c` 中调用：
+详见 [ESP32-P4 移植指南](../docs/garden-ui-sim-porting-guide.md)。
 
-```c
-#include "garden_ui.h"
+简要步骤：复制 `garden_ui.c` 和 `garden_ui.h` 到 ESP32-P4 工程，将 `fill_rect` 直写像素替换为 LVGL layer API（PPA 硬件加速），在 `app_main.c` 中调用 `garden_ui_init()` 和 `garden_ui_tick()`。
 
-void app_main(void) {
-    // ... LCD + LVGL 初始化 ...
-    garden_ui_init();
+## 性能说明
 
-    while (1) {
-        garden_ui_tick(20);  // 每 20ms 调用
-        lv_timer_handler();
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-}
-```
-
-触摸回调中调用 `garden_ui_touch_event(x, y, pressed)`，编码器中断调用 `garden_ui_encoder_event(delta)`。
+PC 仿真器使用"静态背景缓存"策略：
+- 启动时将所有静态元素（天空、山丘、栅栏、小花等）绘制一次，缓存到 `s_bg_buf`（~800KB）
+- 每帧 memcpy 背景 + 只绘制动态元素（云、植物、蝴蝶、鸟、粒子、水滴）
+- 这是 PC 上的 workaround，ESP32-P4 上应使用 LVGL 原生脏矩形刷新
