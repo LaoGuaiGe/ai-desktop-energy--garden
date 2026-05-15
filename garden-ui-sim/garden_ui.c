@@ -14,22 +14,32 @@
 /* ── Particle ── */
 typedef struct {
     int16_t  x, y;
-    int16_t  vy;      /* negative = upward, px per tick */
-    uint8_t  alpha;   /* 0-255, fades as it rises */
+    int16_t  vx, vy;  /* velocity */
+    uint8_t  alpha;
     bool     active;
 } particle_t;
 
+/* ── Water drop ── */
+typedef struct {
+    int16_t  x, y;
+    int16_t  vy;
+    bool     active;
+} waterdrop_t;
+
 /* ── Garden state ── */
 typedef struct {
-    uint8_t    plant_stage;   /* 0-5, fixed 3 (mature) in demo */
-    uint16_t   energy_x10;   /* energy * 10, initial 450 = 45.0 */
-    uint8_t    streak_days;  /* fixed 7 in demo */
-    uint8_t    plant_frame;  /* 0-3 pixel animation frame */
-    uint32_t   frame_timer;  /* ms accumulator for plant anim */
-    uint32_t   draw_timer;   /* ms accumulator for draw throttle */
-    uint32_t   burst_timer;  /* ms remaining for watering burst */
-    bool       dirty;        /* needs redraw */
+    uint8_t    plant_stage;
+    uint16_t   energy_x10;
+    uint8_t    streak_days;
+    uint8_t    plant_frame;
+    uint32_t   frame_timer;
+    uint32_t   draw_timer;
+    uint32_t   burst_timer;
+    uint32_t   wet_timer;      /* ms remaining for wet soil effect */
+    uint32_t   evolve_timer;   /* ms remaining for evolution flash */
+    bool       dirty;
     particle_t particles[8];
+    waterdrop_t drops[12];     /* water drops when watering */
 } garden_state_t;
 
 static garden_state_t s_state;
@@ -44,11 +54,15 @@ static lv_obj_t *s_label_streak;
 static int16_t s_cloud1_x = 80;
 static int16_t s_cloud2_x = 380;
 
-/* Canvas buffer: RGB565, 900×452 = 813600 bytes */
+/* Canvas buffer: RGB565, 900×452 */
 static uint8_t s_scene_buf[SCENE_W * SCENE_H * 2];
+/* Static background cache (drawn once) */
+static uint8_t s_bg_buf[SCENE_W * SCENE_H * 2];
+static bool s_bg_ready = false;
 
 /* ── Forward declarations ── */
 static void build_layout(void);
+static void draw_background(void);
 static void draw_scene(void);
 static void spawn_particles(int count);
 static void water_cb(lv_event_t *e);
@@ -75,7 +89,19 @@ void garden_ui_button_event(uint8_t type) {
         if (s_state.energy_x10 > 1000) s_state.energy_x10 = 1000;
         lv_bar_set_value(s_bar_energy, s_state.energy_x10 / 10, LV_ANIM_ON);
         s_state.burst_timer = 1000;
+        s_state.wet_timer   = 0;  /* wet starts after drops land */
         spawn_particles(8);
+        /* Spawn water drops (fast, staggered heights) */
+        for (int i = 0; i < 12; i++) {
+            s_state.drops[i].x  = (int16_t)(SCENE_W / 2 - 30 + (i * 5));
+            s_state.drops[i].y  = (int16_t)(20 + (i * 11) % 60);
+            s_state.drops[i].vy = (int16_t)(10 + (i % 4) * 2);
+            s_state.drops[i].active = true;
+        }
+        /* Check for evolution */
+        if (s_state.energy_x10 >= 1000 && s_state.plant_stage < 5) {
+            s_state.evolve_timer = 800;
+        }
     }
 }
 
@@ -105,6 +131,18 @@ void garden_ui_tick(uint32_t elapsed_ms) {
     else
         s_state.burst_timer = 0;
 
+    /* Wet soil timer */
+    if (s_state.wet_timer > elapsed_ms)
+        s_state.wet_timer -= elapsed_ms;
+    else
+        s_state.wet_timer = 0;
+
+    /* Evolution flash timer */
+    if (s_state.evolve_timer > elapsed_ms)
+        s_state.evolve_timer -= elapsed_ms;
+    else
+        s_state.evolve_timer = 0;
+
     /* Move clouds every 50ms */
     s_state.draw_timer += elapsed_ms;
     if (s_state.draw_timer >= 50) {
@@ -120,18 +158,31 @@ void garden_ui_tick(uint32_t elapsed_ms) {
     for (int i = 0; i < 8; i++) {
         if (!s_state.particles[i].active) continue;
         s_state.particles[i].y = (int16_t)(s_state.particles[i].y + s_state.particles[i].vy);
+        s_state.particles[i].x = (int16_t)(s_state.particles[i].x + s_state.particles[i].vx);
         s_state.particles[i].alpha = (uint8_t)(s_state.particles[i].alpha > 5
                                      ? s_state.particles[i].alpha - 5 : 0);
         if (s_state.particles[i].y < 0 || s_state.particles[i].alpha == 0) {
             s_state.particles[i].x     = (int16_t)(SCENE_W / 2 - 20 + i * 10);
             s_state.particles[i].y     = (int16_t)(SCENE_H - 80);
             s_state.particles[i].vy    = (int16_t)(-(2 + (i % 3)));
+            s_state.particles[i].vx    = (int16_t)((i % 3) - 1);
             s_state.particles[i].alpha = 200;
         }
         s_state.dirty = true;
     }
 
-    /* Only redraw when something changed */
+    /* Update water drops */
+    for (int i = 0; i < 12; i++) {
+        if (!s_state.drops[i].active) continue;
+        s_state.drops[i].y = (int16_t)(s_state.drops[i].y + s_state.drops[i].vy);
+        if (s_state.drops[i].y > SCENE_H - 60) {
+            s_state.drops[i].active = false;
+            /* Trigger wet soil when first drop lands */
+            if (s_state.wet_timer == 0) s_state.wet_timer = 2000;
+        }
+        s_state.dirty = true;
+    }
+
     if (s_state.dirty) {
         s_state.dirty = false;
         draw_scene();
@@ -145,6 +196,7 @@ static void spawn_particles(int count) {
         s_state.particles[i].x      = (int16_t)(SCENE_W / 2 - 20 + i * 12);
         s_state.particles[i].y      = (int16_t)(SCENE_H - 80);
         s_state.particles[i].vy     = (int16_t)(-(2 + (i % 4)));
+        s_state.particles[i].vx     = (int16_t)((i % 3) - 1);
         s_state.particles[i].alpha  = (uint8_t)(180 + i * 9);
         s_state.particles[i].active = true;
     }
@@ -442,36 +494,43 @@ static uint8_t s_butterfly_frame = 0;
 static int16_t s_bird_x = -30;
 static int16_t s_bird_y = 60;
 
-static void draw_scene(void) {
+/* Draw all static elements once into s_bg_buf */
+static void draw_background(void) {
+    /* Temporarily point fill_rect at bg buffer */
+    memcpy(s_scene_buf, s_bg_buf, 0); /* no-op, just ensure order */
+    uint8_t *save = NULL;
+    /* Swap: draw into bg_buf via scene_buf pointer trick */
+    save = (uint8_t *)memcpy(s_bg_buf, s_scene_buf, 0); /* no-op */
+    (void)save;
+
+    /* We draw directly into s_scene_buf then copy to s_bg_buf at the end */
     int16_t base_y = (int16_t)(SCENE_H - 60);
 
-    /* ── Sky gradient (3 bands) ── */
+    /* Sky gradient */
     fill_rect(0, 0,           SCENE_W, SCENE_H / 3,     0x5BAFE6, 255);
     fill_rect(0, SCENE_H / 3, SCENE_W, SCENE_H / 3,     0x87CEEB, 255);
     fill_rect(0, SCENE_H * 2 / 3, SCENE_W, SCENE_H / 3, 0xA8DCEF, 255);
 
-    /* ── Sun (top right) ── */
+    /* Sun */
     fill_rect(780, 20, 40, 40, 0xFFEE44, 255);
     fill_rect(776, 28, 48, 24, 0xFFEE44, 255);
     fill_rect(788, 16, 24, 48, 0xFFEE44, 255);
-    /* sun rays */
     fill_rect(770, 36, 6, 8, 0xFFDD44, 180);
     fill_rect(824, 36, 6, 8, 0xFFDD44, 180);
     fill_rect(796, 10, 8, 6, 0xFFDD44, 180);
     fill_rect(796, 64, 8, 6, 0xFFDD44, 180);
 
-    /* ── Distant hills (background layer) ── */
+    /* Distant hills */
     for (int16_t i = 0; i < SCENE_W; i += 6) {
         int16_t h = (int16_t)(30 + 15 * ((i * 7 + 13) % 11) / 10);
         fill_rect(i, base_y - h - 60, 6, h, 0x6AAA5A, 255);
     }
-    /* smooth hill tops */
     fill_rect(50,  base_y - 100, 120, 20, 0x6AAA5A, 255);
     fill_rect(250, base_y - 110, 150, 25, 0x5A9A4A, 255);
     fill_rect(500, base_y - 95,  130, 18, 0x6AAA5A, 255);
     fill_rect(700, base_y - 105, 140, 22, 0x5A9A4A, 255);
 
-    /* ── Background trees (silhouettes on hills) ── */
+    /* Background trees */
     for (int tx = 80; tx < SCENE_W - 50; tx += 140) {
         int16_t th = (int16_t)(40 + (tx * 3) % 20);
         fill_rect(tx, base_y - 60 - th, 12, th, 0x3A7A2A, 255);
@@ -479,7 +538,91 @@ static void draw_scene(void) {
         fill_rect(tx - 6,  base_y - 60 - th - 20, 24, 14, 0x4A8A3A, 255);
     }
 
-    /* ── Clouds ── */
+    /* Grass ground */
+    fill_rect(0, base_y, SCENE_W, 8, 0x5A8A3A, 255);
+    fill_rect(0, base_y + 8, SCENE_W, SCENE_H - base_y - 8, 0x8B6914, 255);
+    for (int16_t dx = 10; dx < SCENE_W; dx += 30) {
+        int16_t dy = (int16_t)(base_y + 12 + (dx * 7) % 20);
+        fill_rect(dx, dy, 8, 4, 0x7A5A0A, 255);
+    }
+    for (int16_t gx = 5; gx < SCENE_W; gx += 18) {
+        int16_t gh = (int16_t)(6 + (gx * 3) % 8);
+        fill_rect(gx, base_y - gh, 4, gh, 0x4A9A2A, 255);
+        fill_rect(gx + 5, base_y - gh + 2, 3, gh - 2, 0x5AAA3A, 255);
+    }
+
+    /* Left fence */
+    for (int16_t fx = 30; fx < 200; fx += 24) {
+        fill_rect(fx, base_y - 30, 6, 30, 0xAA8844, 255);
+        fill_rect(fx, base_y - 28, 8, 4, 0xBB9955, 255);
+    }
+    fill_rect(30, base_y - 20, 170, 4, 0x997733, 255);
+    fill_rect(30, base_y - 10, 170, 4, 0x997733, 255);
+
+    /* Right fence */
+    for (int16_t fx = 720; fx < SCENE_W - 20; fx += 24) {
+        fill_rect(fx, base_y - 30, 6, 30, 0xAA8844, 255);
+        fill_rect(fx, base_y - 28, 8, 4, 0xBB9955, 255);
+    }
+    fill_rect(720, base_y - 20, SCENE_W - 740, 4, 0x997733, 255);
+    fill_rect(720, base_y - 10, SCENE_W - 740, 4, 0x997733, 255);
+
+    /* Small flowers left */
+    fill_rect(240, base_y - 16, 4, 16, 0x5A9A2A, 255);
+    fill_rect(236, base_y - 22, 12, 8, 0xFF6688, 255);
+    fill_rect(238, base_y - 24, 8, 4, 0xFFAACC, 255);
+    fill_rect(280, base_y - 12, 4, 12, 0x5A9A2A, 255);
+    fill_rect(276, base_y - 18, 12, 8, 0xFFAA44, 255);
+    fill_rect(278, base_y - 20, 8, 4, 0xFFCC66, 255);
+    fill_rect(320, base_y - 20, 4, 20, 0x5A9A2A, 255);
+    fill_rect(316, base_y - 26, 12, 8, 0xAA44FF, 255);
+    fill_rect(318, base_y - 28, 8, 4, 0xCC88FF, 255);
+
+    /* Small flowers right */
+    fill_rect(600, base_y - 14, 4, 14, 0x5A9A2A, 255);
+    fill_rect(596, base_y - 20, 12, 8, 0xFF4466, 255);
+    fill_rect(598, base_y - 22, 8, 4, 0xFF8899, 255);
+    fill_rect(650, base_y - 18, 4, 18, 0x5A9A2A, 255);
+    fill_rect(646, base_y - 24, 12, 8, 0x44AAFF, 255);
+    fill_rect(648, base_y - 26, 8, 4, 0x88CCFF, 255);
+    fill_rect(690, base_y - 10, 4, 10, 0x5A9A2A, 255);
+    fill_rect(686, base_y - 16, 12, 8, 0xFFDD44, 255);
+    fill_rect(688, base_y - 18, 8, 4, 0xFFEE88, 255);
+
+    /* Mushrooms */
+    fill_rect(160, base_y - 10, 4, 10, 0xEEDDCC, 255);
+    fill_rect(155, base_y - 16, 14, 8, 0xFF4444, 255);
+    fill_rect(157, base_y - 18, 4, 4, 0xFFFFFF, 255);
+    fill_rect(163, base_y - 16, 4, 4, 0xFFFFFF, 255);
+    fill_rect(175, base_y - 8, 3, 8, 0xEEDDCC, 255);
+    fill_rect(172, base_y - 12, 10, 6, 0xFF6644, 255);
+    fill_rect(174, base_y - 13, 3, 3, 0xFFFFFF, 255);
+
+    /* Stones */
+    fill_rect(400, base_y + 2, 12, 8, 0x999999, 255);
+    fill_rect(402, base_y,     8, 4, 0xAAAAAA, 255);
+    fill_rect(500, base_y + 4, 10, 6, 0x888888, 255);
+    fill_rect(350, base_y + 6, 8, 5, 0x777777, 255);
+
+    /* Watering path */
+    fill_rect(380, base_y + 2, 140, 6, 0x9A7A2A, 255);
+    fill_rect(385, base_y + 1, 130, 2, 0xAA8A3A, 255);
+
+    /* Copy rendered scene to bg cache */
+    memcpy(s_bg_buf, s_scene_buf, sizeof(s_bg_buf));
+    s_bg_ready = true;
+}
+
+static void draw_scene(void) {
+    int16_t base_y = (int16_t)(SCENE_H - 60);
+
+    /* Restore static background (fast memcpy instead of redrawing everything) */
+    if (!s_bg_ready) {
+        draw_background();
+    }
+    memcpy(s_scene_buf, s_bg_buf, sizeof(s_scene_buf));
+
+    /* ── Clouds (dynamic) ── */
     fill_rect(s_cloud1_x,      30, 36, 14, 0xFFFFFF, 230);
     fill_rect(s_cloud1_x +  8, 20, 24, 18, 0xFFFFFF, 230);
     fill_rect(s_cloud1_x + 28, 26, 18, 12, 0xFFFFFF, 230);
@@ -489,68 +632,9 @@ static void draw_scene(void) {
     fill_rect(s_cloud2_x + 12, 44, 28, 16, 0xFFFFFF, 230);
     fill_rect(s_cloud2_x + 6,  63, 32, 6,  0xEEEEFF, 180);
 
-    /* ── Third cloud ── */
     int16_t c3x = (int16_t)((s_cloud1_x + 500) % (SCENE_W + 80) - 40);
     fill_rect(c3x,      80, 30, 10, 0xFFFFFF, 200);
     fill_rect(c3x + 6,  72, 20, 14, 0xFFFFFF, 200);
-
-    /* ── Grass ground (textured) ── */
-    fill_rect(0, base_y, SCENE_W, 8, 0x5A8A3A, 255);
-    /* dirt */
-    fill_rect(0, base_y + 8, SCENE_W, SCENE_H - base_y - 8, 0x8B6914, 255);
-    /* dirt texture spots */
-    for (int16_t dx = 10; dx < SCENE_W; dx += 30) {
-        int16_t dy = (int16_t)(base_y + 12 + (dx * 7) % 20);
-        fill_rect(dx, dy, 8, 4, 0x7A5A0A, 255);
-    }
-    /* grass tufts on top */
-    for (int16_t gx = 5; gx < SCENE_W; gx += 18) {
-        int16_t gh = (int16_t)(6 + (gx * 3) % 8);
-        fill_rect(gx, base_y - gh, 4, gh, 0x4A9A2A, 255);
-        fill_rect(gx + 5, base_y - gh + 2, 3, gh - 2, 0x5AAA3A, 255);
-    }
-
-    /* ── Pixel fence ── */
-    for (int16_t fx = 30; fx < 200; fx += 24) {
-        fill_rect(fx, base_y - 30, 6, 30, 0xAA8844, 255); /* post */
-        fill_rect(fx, base_y - 28, 8, 4, 0xBB9955, 255);  /* cap */
-    }
-    fill_rect(30, base_y - 20, 170, 4, 0x997733, 255); /* rail top */
-    fill_rect(30, base_y - 10, 170, 4, 0x997733, 255); /* rail bottom */
-
-    /* ── Right side fence ── */
-    for (int16_t fx = 720; fx < SCENE_W - 20; fx += 24) {
-        fill_rect(fx, base_y - 30, 6, 30, 0xAA8844, 255);
-        fill_rect(fx, base_y - 28, 8, 4, 0xBB9955, 255);
-    }
-    fill_rect(720, base_y - 20, SCENE_W - 740, 4, 0x997733, 255);
-    fill_rect(720, base_y - 10, SCENE_W - 740, 4, 0x997733, 255);
-
-    /* ── Small flowers (left side) ── */
-    fill_rect(240, base_y - 16, 4, 16, 0x5A9A2A, 255);
-    fill_rect(236, base_y - 22, 12, 8, 0xFF6688, 255);
-    fill_rect(238, base_y - 24, 8, 4, 0xFFAACC, 255);
-
-    fill_rect(280, base_y - 12, 4, 12, 0x5A9A2A, 255);
-    fill_rect(276, base_y - 18, 12, 8, 0xFFAA44, 255);
-    fill_rect(278, base_y - 20, 8, 4, 0xFFCC66, 255);
-
-    fill_rect(320, base_y - 20, 4, 20, 0x5A9A2A, 255);
-    fill_rect(316, base_y - 26, 12, 8, 0xAA44FF, 255);
-    fill_rect(318, base_y - 28, 8, 4, 0xCC88FF, 255);
-
-    /* ── Small flowers (right side) ── */
-    fill_rect(600, base_y - 14, 4, 14, 0x5A9A2A, 255);
-    fill_rect(596, base_y - 20, 12, 8, 0xFF4466, 255);
-    fill_rect(598, base_y - 22, 8, 4, 0xFF8899, 255);
-
-    fill_rect(650, base_y - 18, 4, 18, 0x5A9A2A, 255);
-    fill_rect(646, base_y - 24, 12, 8, 0x44AAFF, 255);
-    fill_rect(648, base_y - 26, 8, 4, 0x88CCFF, 255);
-
-    fill_rect(690, base_y - 10, 4, 10, 0x5A9A2A, 255);
-    fill_rect(686, base_y - 16, 12, 8, 0xFFDD44, 255);
-    fill_rect(688, base_y - 18, 8, 4, 0xFFEE88, 255);
 
     /* ── Main plant (center, stage-dependent) ── */
     int8_t  sway[]  = {-4, -1, 4, 1};
@@ -659,22 +743,6 @@ static void draw_scene(void) {
         break;
     }
 
-    /* ── Mushrooms near fence ── */
-    fill_rect(160, base_y - 10, 4, 10, 0xEEDDCC, 255);
-    fill_rect(155, base_y - 16, 14, 8, 0xFF4444, 255);
-    fill_rect(157, base_y - 18, 4, 4, 0xFFFFFF, 255);
-    fill_rect(163, base_y - 16, 4, 4, 0xFFFFFF, 255);
-
-    fill_rect(175, base_y - 8, 3, 8, 0xEEDDCC, 255);
-    fill_rect(172, base_y - 12, 10, 6, 0xFF6644, 255);
-    fill_rect(174, base_y - 13, 3, 3, 0xFFFFFF, 255);
-
-    /* ── Stones / pebbles ── */
-    fill_rect(400, base_y + 2, 12, 8, 0x999999, 255);
-    fill_rect(402, base_y,     8, 4, 0xAAAAAA, 255);
-    fill_rect(500, base_y + 4, 10, 6, 0x888888, 255);
-    fill_rect(350, base_y + 6, 8, 5, 0x777777, 255);
-
     /* ── Butterfly ── */
     s_butterfly_frame = (uint8_t)((s_butterfly_frame + 1) % 4);
     int8_t wing_off = (s_butterfly_frame < 2) ? 0 : 3;
@@ -700,14 +768,69 @@ static void draw_scene(void) {
         if (!s_state.particles[i].active) continue;
         fill_rect(s_state.particles[i].x, s_state.particles[i].y,
                   6, 6, 0x44FF88, s_state.particles[i].alpha);
-        /* glow around particle */
         fill_rect(s_state.particles[i].x - 2, s_state.particles[i].y - 2,
                   10, 10, 0x88FFAA, (uint8_t)(s_state.particles[i].alpha / 4));
     }
 
-    /* ── Watering path (decorative) ── */
-    fill_rect(380, base_y + 2, 140, 6, 0x9A7A2A, 255);
-    fill_rect(385, base_y + 1, 130, 2, 0xAA8A3A, 255);
+    /* ── Water drops (falling when watering) ── */
+    for (int i = 0; i < 12; i++) {
+        if (!s_state.drops[i].active) continue;
+        fill_rect(s_state.drops[i].x, s_state.drops[i].y, 3, 8, 0x44AAFF, 200);
+        fill_rect(s_state.drops[i].x, s_state.drops[i].y, 2, 4, 0x88CCFF, 255);
+    }
+
+    /* ── Wet soil effect (darker ground after drops land) ── */
+    if (s_state.wet_timer > 0) {
+        uint8_t wet_alpha = (uint8_t)(s_state.wet_timer > 1000 ? 80 : s_state.wet_timer * 80 / 1000);
+        fill_rect(root_x - 40, base_y + 2, 80, 12, 0x3A2A00, wet_alpha);
+        fill_rect(root_x - 30, base_y - 2, 60, 6, 0x4A3A0A, (uint8_t)(wet_alpha / 2));
+    }
+
+    /* ── Plant shadow on ground ── */
+    {
+        int8_t  sw[] = {-4, -1, 4, 1};
+        int16_t shadow_off = (int16_t)(sw[s_state.plant_frame] * 2);
+        fill_rect(root_x - 20 + shadow_off, base_y + 4, 50, 6, 0x000000, 30);
+        fill_rect(root_x - 14 + shadow_off, base_y + 2, 38, 4, 0x000000, 20);
+    }
+
+    /* ── Foreground grass (closer, larger, slight parallax) ── */
+    fill_rect(0,   base_y - 4, 16, 14, 0x3A8A1A, 255);
+    fill_rect(4,   base_y - 10, 8, 10, 0x4AAA2A, 255);
+    fill_rect(12,  base_y - 6, 10, 10, 0x3A8A1A, 255);
+
+    fill_rect(SCENE_W - 20, base_y - 6, 20, 14, 0x3A8A1A, 255);
+    fill_rect(SCENE_W - 16, base_y - 12, 10, 12, 0x4AAA2A, 255);
+    fill_rect(SCENE_W - 8,  base_y - 8, 8, 12, 0x3A8A1A, 255);
+
+    /* Foreground flowers at edges */
+    fill_rect(20, base_y - 14, 4, 14, 0x4A9A2A, 255);
+    fill_rect(16, base_y - 20, 12, 8, 0xFF5577, 255);
+    fill_rect(18, base_y - 22, 8, 4, 0xFF99AA, 255);
+
+    fill_rect(SCENE_W - 35, base_y - 16, 4, 16, 0x4A9A2A, 255);
+    fill_rect(SCENE_W - 39, base_y - 22, 12, 8, 0xFFAA33, 255);
+    fill_rect(SCENE_W - 37, base_y - 24, 8, 4, 0xFFCC66, 255);
+
+    /* ── Evolution flash (rounded rect via layered rects) ── */
+    if (s_state.evolve_timer > 0) {
+        uint8_t flash = (uint8_t)(s_state.evolve_timer > 400
+                        ? (s_state.evolve_timer - 400) * 120 / 400
+                        : s_state.evolve_timer * 120 / 400);
+        /* Simulate rounded corners: narrower top/bottom, full middle */
+        fill_rect(root_x - 50, base_y - 175, 100, 5, 0xFFFFFF, (uint8_t)(flash * 2 / 3));
+        fill_rect(root_x - 55, base_y - 170, 110, 150, 0xFFFFFF, flash);
+        fill_rect(root_x - 50, base_y - 20, 100, 5, 0xFFFFFF, (uint8_t)(flash * 2 / 3));
+        /* Inner glow (brighter center) */
+        fill_rect(root_x - 30, base_y - 150, 60, 110, 0xFFFFFF, (uint8_t)(flash * 3 / 4));
+    }
+
+    /* ── Energy bar full glow (pulsing when >= 100) ── */
+    if (s_state.energy_x10 >= 1000) {
+        uint8_t pulse = (uint8_t)(80 + (s_state.plant_frame * 30));
+        fill_rect(root_x - 30, base_y - 180, 60, 4, 0xFFDD44, pulse);
+        fill_rect(root_x - 20, base_y - 185, 40, 3, 0xFFDD44, (uint8_t)(pulse / 2));
+    }
 
     lv_obj_invalidate(s_canvas_scene);
 }
