@@ -28,7 +28,9 @@
 
 // 🎨 LVGL
 #include "esp_lvgl_port.h"
-#include "garden_ui.h"
+#include "garden_nav.h"
+#include "garden_page.h"
+#include "garden_focus.h"
 #include "lvgl.h"
 
 static const char *TAG = "main";
@@ -381,10 +383,22 @@ void app_main(void) {
   // 🔘 按钮
   button_init();
 
-  // 🌱 Garden UI Demo
-  ESP_LOGI(TAG, "🌱 启动 Garden UI Demo...");
+  // 🌱 Multi-page navigation init
+  ESP_LOGI(TAG, "🌱 初始化多页面导航...");
   if (lvgl_port_lock(0)) {
-    garden_ui_init();
+    /* Init navigation hub */
+    garden_nav_init(lv_screen_active());
+
+    /* Register pages: index 0=leftmost, 1=HOME */
+    garden_page_def_t page_focus  = { "focus",  garden_focus_create,  garden_focus_destroy,  garden_focus_tick,  garden_focus_on_button,  garden_focus_set_active };
+    garden_page_def_t page_garden = { "garden", garden_page_create,   garden_page_destroy,   garden_page_tick,   garden_page_on_button,   garden_page_set_active };
+
+    garden_nav_register(0, &page_focus);
+    garden_nav_register(1, &page_garden);
+
+    /* Wire cross-page callback: focus done → garden energy */
+    garden_focus_set_done_cb(garden_page_add_energy);
+
     lvgl_port_unlock();
   }
   ESP_LOGI(TAG, "✅ 启动完成");
@@ -393,20 +407,31 @@ void app_main(void) {
   bool btn_last = true; // 上一次按钮状态 (上拉, 默认高)
   TickType_t last_tick = xTaskGetTickCount();
   while (1) {
-    // 🔘 按钮检测 (低电平使能, 带消抖)
+    // 🔘 按钮检测 (低电平使能, 带消抖 + 长按)
     bool btn_now = gpio_get_level(BUTTON_GPIO);
     if (btn_last == true && btn_now == false) {
-      // ⬇️ 检测到下降沿 (按下)
-      vTaskDelay(pdMS_TO_TICKS(50)); // 消抖
+      // ⬇️ 下降沿 — 开始计时
+      vTaskDelay(pdMS_TO_TICKS(30)); // 消抖
       if (gpio_get_level(BUTTON_GPIO) == 0) {
-        ESP_LOGI(TAG, "🔘 按钮按下! Garden UI 确认/浇水");
-        if (lvgl_port_lock(0)) {
-          garden_ui_button_event(0);
-          lvgl_port_unlock();
-        }
-        // 等待按钮松开
+        uint32_t press_ms = 0;
+        bool long_press = false;
         while (gpio_get_level(BUTTON_GPIO) == 0) {
           vTaskDelay(pdMS_TO_TICKS(50));
+          press_ms += 50;
+          if (press_ms >= 500) {
+            long_press = true;
+            break;
+          }
+        }
+        if (lvgl_port_lock(0)) {
+          garden_nav_button(long_press ? 1 : 0);
+          lvgl_port_unlock();
+        }
+        /* 如果是长按, 等待松开 */
+        if (long_press) {
+          while (gpio_get_level(BUTTON_GPIO) == 0) {
+            vTaskDelay(pdMS_TO_TICKS(50));
+          }
         }
       }
     }
@@ -416,7 +441,7 @@ void app_main(void) {
     uint32_t elapsed_ms = (uint32_t)((now_tick - last_tick) * portTICK_PERIOD_MS);
     last_tick = now_tick;
     if (lvgl_port_lock(0)) {
-      garden_ui_tick(elapsed_ms);
+      garden_nav_tick(elapsed_ms);
       lvgl_port_unlock();
     }
 
