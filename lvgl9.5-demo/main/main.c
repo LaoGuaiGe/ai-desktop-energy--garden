@@ -27,8 +27,8 @@
 #include "esp_lcd_touch_axs15260.h"
 
 // 🎨 LVGL
-#include "demos/lv_demos.h"
 #include "esp_lvgl_port.h"
+#include "garden_ui.h"
 #include "lvgl.h"
 
 static const char *TAG = "main";
@@ -299,32 +299,6 @@ static void button_init(void) {
 }
 
 // ============================================================================
-// 🔄 横竖屏切换
-// ============================================================================
-
-static void toggle_orientation(void) {
-  s_is_landscape = !s_is_landscape;
-
-  lv_display_rotation_t rot =
-      s_is_landscape ? LV_DISPLAY_ROTATION_90 : LV_DISPLAY_ROTATION_0;
-
-  if (lvgl_port_lock(0)) {
-    // 🔄 切换旋转方向
-    lv_display_set_rotation(s_disp, rot);
-
-    // 🗑️ 清除当前 UI 并重建 Demo
-    lv_obj_clean(lv_screen_active());
-    lv_demo_widgets();
-
-    lvgl_port_unlock();
-  }
-
-  ESP_LOGI(TAG, "🔄 切换到 %s (%dx%d)", s_is_landscape ? "横屏" : "竖屏",
-           s_is_landscape ? AXS15260_LCD_V_RES : AXS15260_LCD_H_RES,
-           s_is_landscape ? AXS15260_LCD_H_RES : AXS15260_LCD_V_RES);
-}
-
-// ============================================================================
 // 🎨 LVGL 初始化
 // ============================================================================
 
@@ -382,7 +356,7 @@ static esp_err_t lvgl_init(void) {
 
 void app_main(void) {
   ESP_LOGI(TAG, "🚀 ESP32-P4 AXS15260 LVGL 演示程序");
-  ESP_LOGI(TAG, "📋 物理分辨率: %dx%d, 默认: %s, GPIO%d 按钮切换横竖屏",
+  ESP_LOGI(TAG, "📋 物理分辨率: %dx%d, 默认: %s, GPIO%d 按钮确认/浇水",
            AXS15260_LCD_H_RES, AXS15260_LCD_V_RES,
            s_is_landscape ? "横屏" : "竖屏", BUTTON_GPIO);
 
@@ -407,16 +381,17 @@ void app_main(void) {
   // 🔘 按钮
   button_init();
 
-  // 🎨 LVGL Demo
-  ESP_LOGI(TAG, "🎨 启动 LVGL Demo...");
+  // 🌱 Garden UI Demo
+  ESP_LOGI(TAG, "🌱 启动 Garden UI Demo...");
   if (lvgl_port_lock(0)) {
-    lv_demo_widgets();
+    garden_ui_init();
     lvgl_port_unlock();
   }
   ESP_LOGI(TAG, "✅ 启动完成");
 
   // 📊 主循环 (含按钮检测)
   bool btn_last = true; // 上一次按钮状态 (上拉, 默认高)
+  TickType_t last_tick = xTaskGetTickCount();
   while (1) {
     // 🔘 按钮检测 (低电平使能, 带消抖)
     bool btn_now = gpio_get_level(BUTTON_GPIO);
@@ -424,8 +399,11 @@ void app_main(void) {
       // ⬇️ 检测到下降沿 (按下)
       vTaskDelay(pdMS_TO_TICKS(50)); // 消抖
       if (gpio_get_level(BUTTON_GPIO) == 0) {
-        ESP_LOGI(TAG, "🔘 按钮按下! 切换显示方向...");
-        toggle_orientation();
+        ESP_LOGI(TAG, "🔘 按钮按下! Garden UI 确认/浇水");
+        if (lvgl_port_lock(0)) {
+          garden_ui_button_event(0);
+          lvgl_port_unlock();
+        }
         // 等待按钮松开
         while (gpio_get_level(BUTTON_GPIO) == 0) {
           vTaskDelay(pdMS_TO_TICKS(50));
@@ -433,6 +411,14 @@ void app_main(void) {
       }
     }
     btn_last = btn_now;
+
+    TickType_t now_tick = xTaskGetTickCount();
+    uint32_t elapsed_ms = (uint32_t)((now_tick - last_tick) * portTICK_PERIOD_MS);
+    last_tick = now_tick;
+    if (lvgl_port_lock(0)) {
+      garden_ui_tick(elapsed_ms);
+      lvgl_port_unlock();
+    }
 
     vTaskDelay(pdMS_TO_TICKS(20)); // 20ms 轮询周期
   }
