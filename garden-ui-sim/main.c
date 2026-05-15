@@ -75,6 +75,7 @@ int main(int argc, char *argv[]) {
 
     /* LVGL init */
     lv_init();
+    lv_tick_set_cb(SDL_GetTicks);
 
     /* Display */
     lv_display_t *disp = lv_display_create(DISP_W, DISP_H);
