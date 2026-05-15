@@ -31,6 +31,9 @@
 #include "garden_nav.h"
 #include "garden_page.h"
 #include "garden_focus.h"
+#include "garden_ai.h"
+#include "garden_device.h"
+#include "garden_album.h"
 #include "lvgl.h"
 
 static const char *TAG = "main";
@@ -395,6 +398,14 @@ void app_main(void) {
 
     garden_nav_register(0, &page_focus);
     garden_nav_register(1, &page_garden);
+
+    garden_page_def_t page_ai     = { "ai",     garden_ai_create,     garden_ai_destroy,     garden_ai_tick,     garden_ai_on_button,     garden_ai_set_active };
+    garden_page_def_t page_device = { "device", garden_device_create, garden_device_destroy, garden_device_tick, garden_device_on_button, garden_device_set_active };
+    garden_page_def_t page_album  = { "album",  garden_album_create,  garden_album_destroy,  garden_album_tick,  garden_album_on_button,  garden_album_set_active };
+
+    garden_nav_register(2, &page_ai);
+    garden_nav_register(3, &page_device);
+    garden_nav_register(4, &page_album);
 
     /* Wire cross-page callback: focus done → garden energy */
     garden_focus_set_done_cb(garden_page_add_energy);
