@@ -150,6 +150,13 @@ int main(int argc, char *argv[]) {
                 case SDLK_ESCAPE:
                     running = false;
                     break;
+                /* Number keys 1-6: switch plant stage */
+                case SDLK_1: garden_ui_set_stage(0); break;
+                case SDLK_2: garden_ui_set_stage(1); break;
+                case SDLK_3: garden_ui_set_stage(2); break;
+                case SDLK_4: garden_ui_set_stage(3); break;
+                case SDLK_5: garden_ui_set_stage(4); break;
+                case SDLK_6: garden_ui_set_stage(5); break;
                 }
                 break;
 

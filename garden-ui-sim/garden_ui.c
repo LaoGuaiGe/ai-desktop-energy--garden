@@ -80,8 +80,14 @@ void garden_ui_button_event(uint8_t type) {
 }
 
 void garden_ui_touch_event(int16_t x, int16_t y, bool pressed) {
-    /* LVGL pointer indev handles widget hit-testing; nothing extra needed */
     (void)x; (void)y; (void)pressed;
+}
+
+void garden_ui_set_stage(uint8_t stage) {
+    if (stage > 5) stage = 5;
+    s_state.plant_stage = stage;
+    s_state.dirty = true;
+    printf("[stage] set to %d\n", stage);
 }
 
 void garden_ui_tick(uint32_t elapsed_ms) {
@@ -546,41 +552,112 @@ static void draw_scene(void) {
     fill_rect(686, base_y - 16, 12, 8, 0xFFDD44, 255);
     fill_rect(688, base_y - 18, 8, 4, 0xFFEE88, 255);
 
-    /* ── Main plant (center, 4-frame sway: root fixed) ── */
+    /* ── Main plant (center, stage-dependent) ── */
     int8_t  sway[]  = {-4, -1, 4, 1};
     int16_t root_x  = (int16_t)(SCENE_W / 2);
     int16_t sway_px = sway[s_state.plant_frame];
-
-    /* Pot / soil mound */
-    fill_rect(root_x - 20, base_y - 6, 40, 8, 0x7A5A0A, 255);
-    fill_rect(root_x - 16, base_y - 10, 32, 6, 0x6A4A0A, 255);
-
-    /* Stem segments (root fixed, increasing sway) */
-    fill_rect(root_x - 4, base_y - 40,  8, 30, 0x4A8A1A, 255);
-    fill_rect(root_x - 4 + sway_px / 4, base_y - 70, 8, 30, 0x5A9A2A, 255);
-    fill_rect(root_x - 4 + sway_px / 2, base_y - 100, 8, 30, 0x5A9A2A, 255);
-    fill_rect(root_x - 3 + sway_px * 3 / 4, base_y - 125, 6, 25, 0x6AAA2A, 255);
-
     int16_t sx = (int16_t)(root_x + sway_px);
 
-    /* Leaves */
-    fill_rect(sx - 36, base_y - 85, 32, 14, 0x44CC44, 255);
-    fill_rect(sx - 36, base_y - 85, 12, 10, 0x228822, 255);
-    fill_rect(sx + 6,  base_y - 70, 32, 14, 0x44CC44, 255);
-    fill_rect(sx + 26, base_y - 70, 12, 10, 0x228822, 255);
-    fill_rect(sx - 28, base_y - 105, 24, 10, 0x55DD55, 255);
+    /* Pot / soil mound (always visible) */
+    fill_rect(root_x - 22, base_y - 4, 44, 6, 0x7A5A0A, 255);
+    fill_rect(root_x - 18, base_y - 8, 36, 6, 0x6A4A0A, 255);
+    fill_rect(root_x - 14, base_y - 10, 28, 4, 0x5A3A0A, 255);
 
-    /* Flower (larger, more detailed) */
-    fill_rect(sx - 26, base_y - 155, 18, 18, 0xFF88AA, 255);
-    fill_rect(sx + 8,  base_y - 155, 18, 18, 0xFF88AA, 255);
-    fill_rect(sx - 10, base_y - 170, 18, 18, 0xFF99BB, 255);
-    fill_rect(sx - 10, base_y - 140, 18, 18, 0xFF77AA, 255);
-    fill_rect(sx - 26, base_y - 170, 14, 14, 0xFF6699, 200);
-    fill_rect(sx + 12, base_y - 170, 14, 14, 0xFF6699, 200);
-    /* center */
-    fill_rect(sx - 16, base_y - 160, 32, 32, 0xFFDD44, 255);
-    fill_rect(sx - 10, base_y - 154, 20, 20, 0xFFAA22, 255);
-    fill_rect(sx - 6,  base_y - 150, 12, 12, 0xFF8800, 255);
+    switch (s_state.plant_stage) {
+    case 0: /* Seed: small brown dot in soil */
+        fill_rect(root_x - 4, base_y - 14, 8, 6, 0x8B6914, 255);
+        fill_rect(root_x - 2, base_y - 16, 4, 4, 0xAA8833, 255);
+        break;
+
+    case 1: /* Sprout: tiny green shoot */
+        fill_rect(root_x - 2, base_y - 24, 4, 16, 0x5A9A2A, 255);
+        fill_rect(root_x - 8, base_y - 28, 8, 6, 0x44CC44, 255);
+        fill_rect(root_x + 2, base_y - 30, 6, 6, 0x55DD55, 255);
+        break;
+
+    case 2: /* Seedling: small plant with 2 leaves */
+        fill_rect(root_x - 3, base_y - 50, 6, 42, 0x4A8A1A, 255);
+        fill_rect(root_x - 3 + sway_px / 4, base_y - 55, 6, 10, 0x5A9A2A, 255);
+        /* leaves */
+        fill_rect(root_x - 20 + sway_px / 3, base_y - 45, 18, 8, 0x44CC44, 255);
+        fill_rect(root_x + 4 + sway_px / 3, base_y - 40, 18, 8, 0x44CC44, 255);
+        /* tiny bud */
+        fill_rect(root_x - 4 + sway_px / 2, base_y - 62, 8, 8, 0x88DD88, 255);
+        break;
+
+    case 3: /* Mature plant: full stem + leaves, no flower */
+        fill_rect(root_x - 4, base_y - 40, 8, 30, 0x4A8A1A, 255);
+        fill_rect(root_x - 4 + sway_px / 4, base_y - 70, 8, 30, 0x5A9A2A, 255);
+        fill_rect(root_x - 4 + sway_px / 2, base_y - 100, 8, 30, 0x5A9A2A, 255);
+        fill_rect(root_x - 3 + sway_px * 3 / 4, base_y - 120, 6, 20, 0x6AAA2A, 255);
+        /* leaves */
+        fill_rect(sx - 36, base_y - 85, 32, 14, 0x44CC44, 255);
+        fill_rect(sx - 36, base_y - 85, 12, 10, 0x228822, 255);
+        fill_rect(sx + 6,  base_y - 70, 32, 14, 0x44CC44, 255);
+        fill_rect(sx + 26, base_y - 70, 12, 10, 0x228822, 255);
+        fill_rect(sx - 28, base_y - 105, 24, 10, 0x55DD55, 255);
+        fill_rect(sx + 10, base_y - 100, 20, 8, 0x55DD55, 255);
+        /* closed bud */
+        fill_rect(sx - 8, base_y - 135, 16, 16, 0x88CC88, 255);
+        fill_rect(sx - 4, base_y - 138, 8, 6, 0xAAEEAA, 255);
+        break;
+
+    case 4: /* Bloom: full flower */
+        fill_rect(root_x - 4, base_y - 40, 8, 30, 0x4A8A1A, 255);
+        fill_rect(root_x - 4 + sway_px / 4, base_y - 70, 8, 30, 0x5A9A2A, 255);
+        fill_rect(root_x - 4 + sway_px / 2, base_y - 100, 8, 30, 0x5A9A2A, 255);
+        fill_rect(root_x - 3 + sway_px * 3 / 4, base_y - 125, 6, 25, 0x6AAA2A, 255);
+        /* leaves */
+        fill_rect(sx - 36, base_y - 85, 32, 14, 0x44CC44, 255);
+        fill_rect(sx - 36, base_y - 85, 12, 10, 0x228822, 255);
+        fill_rect(sx + 6,  base_y - 70, 32, 14, 0x44CC44, 255);
+        fill_rect(sx + 26, base_y - 70, 12, 10, 0x228822, 255);
+        fill_rect(sx - 28, base_y - 105, 24, 10, 0x55DD55, 255);
+        /* flower petals */
+        fill_rect(sx - 26, base_y - 155, 18, 18, 0xFF88AA, 255);
+        fill_rect(sx + 8,  base_y - 155, 18, 18, 0xFF88AA, 255);
+        fill_rect(sx - 10, base_y - 170, 18, 18, 0xFF99BB, 255);
+        fill_rect(sx - 10, base_y - 140, 18, 18, 0xFF77AA, 255);
+        fill_rect(sx - 26, base_y - 170, 14, 14, 0xFF6699, 200);
+        fill_rect(sx + 12, base_y - 170, 14, 14, 0xFF6699, 200);
+        /* center */
+        fill_rect(sx - 16, base_y - 160, 32, 32, 0xFFDD44, 255);
+        fill_rect(sx - 10, base_y - 154, 20, 20, 0xFFAA22, 255);
+        fill_rect(sx - 6,  base_y - 150, 12, 12, 0xFF8800, 255);
+        break;
+
+    case 5: /* Seed dispersal: dandelion puff with floating seeds */
+        fill_rect(root_x - 4, base_y - 40, 8, 30, 0x4A8A1A, 255);
+        fill_rect(root_x - 4 + sway_px / 4, base_y - 70, 8, 30, 0x5A9A2A, 255);
+        fill_rect(root_x - 3 + sway_px / 2, base_y - 95, 6, 25, 0x8AAA6A, 255);
+        /* dried stem (thinner, brownish) */
+        fill_rect(root_x - 2 + sway_px * 3 / 4, base_y - 120, 4, 25, 0xAA9955, 255);
+        /* dandelion puff (white fluffy ball) */
+        fill_rect(sx - 14, base_y - 140, 28, 28, 0xFFFFFF, 180);
+        fill_rect(sx - 10, base_y - 144, 20, 20, 0xFFFFFF, 220);
+        fill_rect(sx - 6,  base_y - 148, 12, 12, 0xFFFFFF, 255);
+        /* puff detail spokes */
+        fill_rect(sx - 18, base_y - 132, 4, 4, 0xEEEEEE, 200);
+        fill_rect(sx + 14, base_y - 136, 4, 4, 0xEEEEEE, 200);
+        fill_rect(sx - 2,  base_y - 152, 4, 4, 0xEEEEEE, 200);
+        fill_rect(sx + 8,  base_y - 148, 4, 4, 0xEEEEEE, 200);
+        fill_rect(sx - 12, base_y - 146, 4, 4, 0xEEEEEE, 200);
+        /* floating seeds (dispersing) — use frame for animation */
+        {
+            int8_t f = s_state.plant_frame;
+            int16_t seed_offsets[][2] = {
+                {-30 - f*2, -150 + f}, {20 + f*3, -160 - f}, {-40 + f, -140 - f*2},
+                {35 - f, -155 + f*2}, {-20 - f*3, -165 + f}, {45 + f*2, -145 - f}
+            };
+            for (int s = 0; s < 6; s++) {
+                int16_t seed_x = (int16_t)(sx + seed_offsets[s][0]);
+                int16_t seed_y = (int16_t)(base_y + seed_offsets[s][1]);
+                fill_rect(seed_x, seed_y, 3, 3, 0xFFFFFF, (uint8_t)(180 - s * 20));
+                fill_rect(seed_x + 1, seed_y - 3, 1, 3, 0xDDDDDD, (uint8_t)(150 - s * 15));
+            }
+        }
+        break;
+    }
 
     /* ── Mushrooms near fence ── */
     fill_rect(160, base_y - 10, 4, 10, 0xEEDDCC, 255);
