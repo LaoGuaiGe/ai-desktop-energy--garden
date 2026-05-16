@@ -190,7 +190,13 @@ static void nav_drag_cb(lv_event_t *e) {
             show_adjacent_pages();
         }
     } else if (code == LV_EVENT_RELEASED) {
-        if (!s_nav.dragging) return;
+        if (!s_nav.dragging) {
+            /* Short tap — delegate to current page (e.g. garden watering) */
+            if (s_nav.defs[s_nav.current] && s_nav.defs[s_nav.current]->on_button) {
+                s_nav.defs[s_nav.current]->on_button(0);
+            }
+            return;
+        }
         s_nav.dragging = false;
 
         /* Resume canvas rendering */

@@ -1,5 +1,4 @@
 #include "garden_page.h"
-#include "garden_nav.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -88,7 +87,7 @@ static void build_page(lv_obj_t *parent);
 static void draw_background(void);
 static void draw_scene(void);
 static void spawn_particles(int count);
-static void water_click_cb(lv_event_t *e);
+/* water handled via garden_page_on_button */
 static inline uint16_t rgb888_to_565(uint32_t c);
 static void fill_rect(int16_t x, int16_t y, int16_t w, int16_t h, uint32_t color, uint8_t alpha);
 
@@ -270,12 +269,6 @@ static void spawn_particles(int count) {
     }
 }
 
-static void water_click_cb(lv_event_t *e) {
-    (void)e;
-    if (garden_nav_was_dragging()) return;  /* swipe, not tap */
-    garden_page_on_button(0);
-}
-
 static void build_page(lv_obj_t *parent) {
     s_page = lv_obj_create(parent);
     lv_obj_set_pos(s_page, 0, 0);
@@ -379,8 +372,7 @@ static void build_page(lv_obj_t *parent) {
     lv_canvas_set_buffer(s_canvas_scene, s_scene_buf, SCENE_W, SCENE_H,
                          LV_COLOR_FORMAT_RGB565);
     lv_obj_set_pos(s_canvas_scene, SCENE_X, 0);
-    lv_obj_add_flag(s_canvas_scene, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(s_canvas_scene, water_click_cb, LV_EVENT_CLICKED, NULL);
+    /* NO CLICKABLE — nav layer handles tap-to-water via page-level touch */
 
     /* ── Right info bar ── */
     lv_obj_t *right = lv_obj_create(s_page);
@@ -495,7 +487,7 @@ static void build_page(lv_obj_t *parent) {
     lv_obj_set_style_shadow_width(btn, 4, 0);
     lv_obj_set_style_shadow_color(btn, lv_color_hex(0x1A3A5A), 0);
     lv_obj_set_style_shadow_offset_y(btn, 3, 0);
-    lv_obj_add_event_cb(btn, water_click_cb, LV_EVENT_CLICKED, NULL);
+    /* No CLICKED callback — nav layer handles tap-to-water */
     lv_obj_t *btn_lbl = lv_label_create(btn);
     lv_label_set_text(btn_lbl, "~ WATER ~");
     lv_obj_set_style_text_color(btn_lbl, lv_color_hex(0xFFFFFF), 0);
