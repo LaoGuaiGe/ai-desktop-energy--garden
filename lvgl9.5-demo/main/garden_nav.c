@@ -50,19 +50,10 @@ void garden_nav_init(lv_obj_t *screen) {
     lv_obj_set_style_pad_all(screen, 0, 0);
     lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Register drag callbacks on the POINTER indev directly.
-     * This bypasses widget-tree event routing entirely — no more
-     * CLICKABLE/CLICKED/bubble issues on any page. */
-    lv_indev_t *indev = lv_indev_get_next(NULL);
-    while (indev) {
-        if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
-            lv_indev_add_event_cb(indev, nav_drag_cb, LV_EVENT_PRESSED, NULL);
-            lv_indev_add_event_cb(indev, nav_drag_cb, LV_EVENT_PRESSING, NULL);
-            lv_indev_add_event_cb(indev, nav_drag_cb, LV_EVENT_RELEASED, NULL);
-            break;
-        }
-        indev = lv_indev_get_next(indev);
-    }
+    /* Nav layer intercepts all touch drag on the screen */
+    lv_obj_add_event_cb(screen, nav_drag_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(screen, nav_drag_cb, LV_EVENT_PRESSING, NULL);
+    lv_obj_add_event_cb(screen, nav_drag_cb, LV_EVENT_RELEASED, NULL);
 }
 
 void garden_nav_register(int index, const garden_page_def_t *def) {
@@ -74,7 +65,13 @@ void garden_nav_register(int index, const garden_page_def_t *def) {
     s_nav.objs[index] = def->create(s_nav.screen);
     if (s_nav.objs[index]) {
         lv_obj_add_flag(s_nav.objs[index], LV_OBJ_FLAG_HIDDEN);
-        /* Drag handled at indev level — no per-page callbacks needed */
+        /* CLICKABLE is REQUIRED — without it, LVGL indev won't track touches
+         * on non-clickable children (e.g. focus page's center labels) */
+        lv_obj_add_flag(s_nav.objs[index], LV_OBJ_FLAG_CLICKABLE);
+        /* Drag callbacks on every page so touches anywhere reach nav */
+        lv_obj_add_event_cb(s_nav.objs[index], nav_drag_cb, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(s_nav.objs[index], nav_drag_cb, LV_EVENT_PRESSING, NULL);
+        lv_obj_add_event_cb(s_nav.objs[index], nav_drag_cb, LV_EVENT_RELEASED, NULL);
     }
 
     position_pages();
