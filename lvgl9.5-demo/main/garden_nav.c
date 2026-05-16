@@ -1,4 +1,5 @@
 #include "garden_nav.h"
+#include <stdlib.h>
 #include <string.h>
 
 #define DISP_W          1280
@@ -25,6 +26,7 @@ static struct {
 } s_nav;
 
 static int32_t s_anim_dummy;  /* placeholder for lv_anim_set_var */
+static int     s_snap_target; /* page index to switch to when anim ends */
 
 /* ── Forward declarations ── */
 static void position_pages(void);
@@ -202,6 +204,7 @@ static void nav_drag_cb(lv_event_t *e) {
 
 /* ── Snap animation ── */
 
+/* Animation target stored in user_data */
 static void snap_anim_cb(void *var, int32_t v) {
     (void)var;
     s_nav.drag_offset = (int16_t)v;
@@ -210,6 +213,8 @@ static void snap_anim_cb(void *var, int32_t v) {
 
 static void snap_ready_cb(lv_anim_t *a) {
     (void)a;
+    /* NOW switch to the target page — drag_offset is at ±DISP_W or 0 */
+    s_nav.current     = s_snap_target;
     s_nav.drag_offset = 0;
     position_pages();
     show_adjacent_pages();
@@ -220,16 +225,30 @@ static void snap_ready_cb(lv_anim_t *a) {
 }
 
 static void snap_to_page(int target) {
+    s_snap_target = target;
+
     int16_t from = s_nav.drag_offset;
-    int16_t to   = 0;
-    s_nav.current = target;
+    int16_t to;
+
+    if (target > s_nav.current) {
+        to = (int16_t)(-DISP_W);   /* current page slides out left */
+    } else if (target < s_nav.current) {
+        to = (int16_t)(DISP_W);    /* current page slides out right */
+    } else {
+        to = 0;                    /* spring back to current */
+    }
+
+    int32_t remaining = (int32_t)(to - from);
+    if (remaining < 0) remaining = -remaining;
+    int32_t duration = SNAP_ANIM_MS * remaining / DISP_W;
+    if (duration < 80) duration = 80;
 
     lv_anim_t anim;
     lv_anim_init(&anim);
     lv_anim_set_var(&anim, &s_anim_dummy);
     lv_anim_set_exec_cb(&anim, snap_anim_cb);
     lv_anim_set_values(&anim, from, to);
-    lv_anim_set_duration(&anim, SNAP_ANIM_MS);
+    lv_anim_set_duration(&anim, duration);
     lv_anim_set_path_cb(&anim, lv_anim_path_ease_out);
     lv_anim_set_ready_cb(&anim, snap_ready_cb);
     lv_anim_start(&anim);
