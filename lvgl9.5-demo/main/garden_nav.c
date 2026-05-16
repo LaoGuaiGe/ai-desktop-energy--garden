@@ -69,6 +69,7 @@ void garden_nav_register(int index, const garden_page_def_t *def) {
 
     s_nav.objs[index] = def->create(s_nav.screen);
     if (s_nav.objs[index]) {
+        ESP_LOGI(TAG, "reg page %d obj=%p name=%s", index, (void*)s_nav.objs[index], def->name);
         lv_obj_add_flag(s_nav.objs[index], LV_OBJ_FLAG_HIDDEN);
         /* CLICKABLE is REQUIRED — without it, LVGL indev won't track touches
          * on non-clickable children (e.g. focus page's center labels) */
@@ -95,6 +96,12 @@ void garden_nav_go_home(bool animate) {
 }
 
 void garden_nav_tick(uint32_t elapsed_ms) {
+    static uint32_t tick_log_ms;
+    tick_log_ms += elapsed_ms;
+    if (tick_log_ms >= 5000) {
+        tick_log_ms = 0;
+        ESP_LOGI(TAG, "tick alive, cur=%d count=%d", s_nav.current, s_nav.count);
+    }
     /* Tick current page and neighbors only */
     for (int i = 0; i < s_nav.count; i++) {
         if (!s_nav.defs[i] || !s_nav.defs[i]->tick) continue;
@@ -168,6 +175,8 @@ static void show_adjacent_pages(void) {
 
 static void nav_drag_cb(lv_event_t *e) {
     lv_event_code_t code = lv_event_get_code(e);
+    lv_obj_t *target = lv_event_get_target_obj(e);
+    ESP_LOGW(TAG, "EVT code=%d target=%p cur=%d", (int)code, (void*)target, s_nav.current);
     lv_indev_t *indev = lv_indev_active();
     if (!indev) return;
 
