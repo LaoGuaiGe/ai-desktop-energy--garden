@@ -145,10 +145,21 @@ static void show_adjacent_pages(void) {
     for (int i = 0; i < s_nav.count; i++) {
         lv_obj_t *page = s_nav.objs[i];
         if (!page) continue;
-        if (i >= s_nav.current - 1 && i <= s_nav.current + 1) {
-            lv_obj_clear_flag(page, LV_OBJ_FLAG_HIDDEN);
+        /* During drag: show current ±1 for carousel effect.
+         * Otherwise: only current page is visible — prevents off-screen
+         * pages (which are on top in z-order) from stealing hit tests. */
+        if (s_nav.dragging) {
+            if (i >= s_nav.current - 1 && i <= s_nav.current + 1) {
+                lv_obj_clear_flag(page, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(page, LV_OBJ_FLAG_HIDDEN);
+            }
         } else {
-            lv_obj_add_flag(page, LV_OBJ_FLAG_HIDDEN);
+            if (i == s_nav.current) {
+                lv_obj_clear_flag(page, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(page, LV_OBJ_FLAG_HIDDEN);
+            }
         }
     }
 }
