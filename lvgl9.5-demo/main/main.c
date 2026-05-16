@@ -414,35 +414,42 @@ void app_main(void) {
   }
   ESP_LOGI(TAG, "✅ 启动完成");
 
-  // 📊 主循环 (含按钮检测)
-  bool btn_last = true; // 上一次按钮状态 (上拉, 默认高)
+  // 📊 主循环 (含按钮检测 — 非阻塞状态机)
+  bool     btn_last       = true;
+  bool     btn_pressed    = false;
+  uint32_t btn_press_ms   = 0;
+  bool     btn_long_fired = false;  /* long-press already triggered */
   TickType_t last_tick = xTaskGetTickCount();
   while (1) {
-    // 🔘 按钮检测 (低电平使能, 带消抖 + 长按)
+    // 🔘 按钮检测 (非阻塞, 无 while 死等)
     bool btn_now = gpio_get_level(BUTTON_GPIO);
     if (btn_last == true && btn_now == false) {
-      // ⬇️ 下降沿 — 开始计时
-      vTaskDelay(pdMS_TO_TICKS(30)); // 消抖
+      /* Falling edge — debounce then start tracking */
+      vTaskDelay(pdMS_TO_TICKS(30));
       if (gpio_get_level(BUTTON_GPIO) == 0) {
-        uint32_t press_ms = 0;
-        bool long_press = false;
-        while (gpio_get_level(BUTTON_GPIO) == 0) {
-          vTaskDelay(pdMS_TO_TICKS(50));
-          press_ms += 50;
-          if (press_ms >= 500) {
-            long_press = true;
-            break;
-          }
-        }
+        btn_pressed    = true;
+        btn_press_ms   = 0;
+        btn_long_fired = false;
+      }
+    }
+    if (btn_pressed && btn_now == false) {
+      /* Still pressed — accumulate time */
+      btn_press_ms += 20;
+      if (btn_press_ms >= 500 && !btn_long_fired) {
+        btn_long_fired = true;
         if (lvgl_port_lock(0)) {
-          garden_nav_button(long_press ? 1 : 0);
+          garden_nav_button(1);  /* long press */
           lvgl_port_unlock();
         }
-        /* 如果是长按, 等待松开 */
-        if (long_press) {
-          while (gpio_get_level(BUTTON_GPIO) == 0) {
-            vTaskDelay(pdMS_TO_TICKS(50));
-          }
+      }
+    }
+    if (btn_pressed && btn_now == true) {
+      /* Released */
+      btn_pressed = false;
+      if (!btn_long_fired) {
+        if (lvgl_port_lock(0)) {
+          garden_nav_button(0);  /* short press */
+          lvgl_port_unlock();
         }
       }
     }

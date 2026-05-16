@@ -60,6 +60,10 @@ void garden_nav_register(int index, const garden_page_def_t *def) {
     s_nav.objs[index] = def->create(s_nav.screen);
     if (s_nav.objs[index]) {
         lv_obj_add_flag(s_nav.objs[index], LV_OBJ_FLAG_HIDDEN);
+        /* Register drag callbacks on every page so touches anywhere reach nav */
+        lv_obj_add_event_cb(s_nav.objs[index], nav_drag_cb, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(s_nav.objs[index], nav_drag_cb, LV_EVENT_PRESSING, NULL);
+        lv_obj_add_event_cb(s_nav.objs[index], nav_drag_cb, LV_EVENT_RELEASED, NULL);
     }
 
     position_pages();
