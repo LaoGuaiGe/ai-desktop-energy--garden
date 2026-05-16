@@ -1,4 +1,5 @@
 #include "garden_focus.h"
+#include "garden_nav.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -84,6 +85,7 @@ lv_obj_t * garden_focus_create(lv_obj_t *parent) {
     lv_obj_set_style_radius(center, 0, 0);
     lv_obj_set_style_pad_all(center, 0, 0);
     lv_obj_clear_flag(center, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(center, LV_OBJ_FLAG_CLICKABLE);   /* nav needs this for drag detection */
 
     lv_obj_t *task = lv_label_create(center);
     lv_label_set_text(task, "DEEP WORK");
@@ -246,10 +248,12 @@ static void garden_focus_reset(void) {
 
 static void start_pause_cb(lv_event_t *e) {
     (void)e;
+    if (garden_nav_was_dragging()) return;
     garden_focus_start_pause();
 }
 
 static void reset_cb(lv_event_t *e) {
     (void)e;
+    if (garden_nav_was_dragging()) return;
     garden_focus_reset();
 }
