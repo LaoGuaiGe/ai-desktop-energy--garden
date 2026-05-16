@@ -58,6 +58,7 @@ lv_obj_t * garden_focus_create(lv_obj_t *parent) {
     lv_obj_set_style_radius(left, 0, 0);
     lv_obj_set_style_pad_all(left, 10, 0);
     lv_obj_clear_flag(left, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(left, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_flex_flow(left, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(left, 8, 0);
 
@@ -85,7 +86,7 @@ lv_obj_t * garden_focus_create(lv_obj_t *parent) {
     lv_obj_set_style_radius(center, 0, 0);
     lv_obj_set_style_pad_all(center, 0, 0);
     lv_obj_clear_flag(center, LV_OBJ_FLAG_SCROLLABLE);
-    /* NO CLICKABLE on center — indev binds to s_focus.page (same pattern as garden page) */
+    lv_obj_add_flag(center, LV_OBJ_FLAG_CLICKABLE);
 
     lv_obj_t *task = lv_label_create(center);
     lv_label_set_text(task, "DEEP WORK");
@@ -127,6 +128,7 @@ lv_obj_t * garden_focus_create(lv_obj_t *parent) {
     lv_obj_set_style_pad_all(right, 14, 0);
     lv_obj_set_style_pad_top(right, 20, 0);
     lv_obj_clear_flag(right, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(right, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_flex_flow(right, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(right, 10, 0);
 

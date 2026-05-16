@@ -53,7 +53,7 @@ void garden_nav_init(lv_obj_t *screen) {
     lv_obj_set_style_pad_all(screen, 0, 0);
     lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    /* Nav layer intercepts all touch drag on the screen */
+    /* Screen-level touch callbacks */
     lv_obj_add_event_cb(screen, nav_drag_cb, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(screen, nav_drag_cb, LV_EVENT_PRESSING, NULL);
     lv_obj_add_event_cb(screen, nav_drag_cb, LV_EVENT_RELEASED, NULL);
@@ -71,13 +71,9 @@ void garden_nav_register(int index, const garden_page_def_t *def) {
     if (s_nav.objs[index]) {
         ESP_LOGI(TAG, "reg page %d obj=%p name=%s", index, (void*)s_nav.objs[index], def->name);
         lv_obj_add_flag(s_nav.objs[index], LV_OBJ_FLAG_HIDDEN);
-        /* CLICKABLE is REQUIRED — without it, LVGL indev won't track touches
-         * on non-clickable children (e.g. focus page's center labels) */
+        /* CLICKABLE needed so indev tracks touches that land on this page's
+         * children. The global screen-level LV_EVENT_ALL hook catches all. */
         lv_obj_add_flag(s_nav.objs[index], LV_OBJ_FLAG_CLICKABLE);
-        /* Drag callbacks on every page so touches anywhere reach nav */
-        lv_obj_add_event_cb(s_nav.objs[index], nav_drag_cb, LV_EVENT_PRESSED, NULL);
-        lv_obj_add_event_cb(s_nav.objs[index], nav_drag_cb, LV_EVENT_PRESSING, NULL);
-        lv_obj_add_event_cb(s_nav.objs[index], nav_drag_cb, LV_EVENT_RELEASED, NULL);
     }
 
     position_pages();
@@ -175,8 +171,6 @@ static void show_adjacent_pages(void) {
 
 static void nav_drag_cb(lv_event_t *e) {
     lv_event_code_t code = lv_event_get_code(e);
-    lv_obj_t *target = lv_event_get_target_obj(e);
-    ESP_LOGW(TAG, "EVT code=%d target=%p cur=%d", (int)code, (void*)target, s_nav.current);
     lv_indev_t *indev = lv_indev_active();
     if (!indev) return;
 
