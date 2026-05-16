@@ -6,6 +6,7 @@
 #define DRAG_DEADZONE   10     /* px before drag engages */
 #define DRAG_THRESHOLD  (DISP_W / 5)  /* 256px to commit page switch */
 #define SNAP_ANIM_MS    200
+#define DRAG_THROTTLE_MS 33    /* max ~30fps during drag */
 
 /* ── Nav state ── */
 static struct {
@@ -17,9 +18,10 @@ static struct {
     int home_index;
 
     /* Drag state */
-    int16_t drag_start_x;
-    int16_t drag_offset;
-    bool    dragging;
+    int16_t  drag_start_x;
+    int16_t  drag_offset;
+    bool     dragging;
+    uint32_t drag_last_ms;  /* throttle timer */
 } s_nav;
 
 static int32_t s_anim_dummy;  /* placeholder for lv_anim_set_var */
@@ -60,7 +62,10 @@ void garden_nav_register(int index, const garden_page_def_t *def) {
     s_nav.objs[index] = def->create(s_nav.screen);
     if (s_nav.objs[index]) {
         lv_obj_add_flag(s_nav.objs[index], LV_OBJ_FLAG_HIDDEN);
-        /* Register drag callbacks on every page so touches anywhere reach nav */
+        /* CLICKABLE is REQUIRED — without it, LVGL indev won't track touches
+         * on non-clickable children (e.g. focus page's center labels) */
+        lv_obj_add_flag(s_nav.objs[index], LV_OBJ_FLAG_CLICKABLE);
+        /* Drag callbacks on every page so touches anywhere reach nav */
         lv_obj_add_event_cb(s_nav.objs[index], nav_drag_cb, LV_EVENT_PRESSED, NULL);
         lv_obj_add_event_cb(s_nav.objs[index], nav_drag_cb, LV_EVENT_PRESSING, NULL);
         lv_obj_add_event_cb(s_nav.objs[index], nav_drag_cb, LV_EVENT_RELEASED, NULL);
@@ -153,6 +158,13 @@ static void nav_drag_cb(lv_event_t *e) {
     } else if (code == LV_EVENT_PRESSING) {
         int16_t dx = (int16_t)(p.x - s_nav.drag_start_x);
         if (dx < -DRAG_DEADZONE || dx > DRAG_DEADZONE || s_nav.dragging) {
+            /* Throttle: skip if last update was < DRAG_THROTTLE_MS ago */
+            uint32_t now_ms = lv_tick_get();
+            if (s_nav.dragging && (now_ms - s_nav.drag_last_ms) < DRAG_THROTTLE_MS) {
+                return;
+            }
+            s_nav.drag_last_ms = now_ms;
+
             s_nav.dragging = true;
             /* Pause canvas rendering on garden page during drag */
             if (s_nav.defs[s_nav.current] && s_nav.defs[s_nav.current]->set_active) {
