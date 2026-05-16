@@ -1,6 +1,9 @@
 #include "garden_nav.h"
+#include "esp_log.h"
 #include <stdlib.h>
 #include <string.h>
+
+static const char *TAG = "nav";
 
 #define DISP_W          1280
 #define DISP_H          452
@@ -54,6 +57,8 @@ void garden_nav_init(lv_obj_t *screen) {
     lv_obj_add_event_cb(screen, nav_drag_cb, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(screen, nav_drag_cb, LV_EVENT_PRESSING, NULL);
     lv_obj_add_event_cb(screen, nav_drag_cb, LV_EVENT_RELEASED, NULL);
+
+    ESP_LOGI(TAG, "init done, HOME=%d, pages=%d", s_nav.home_index, s_nav.count);
 }
 
 void garden_nav_register(int index, const garden_page_def_t *def) {
@@ -163,6 +168,7 @@ static void nav_drag_cb(lv_event_t *e) {
         s_nav.drag_offset  = 0;
         s_nav.dragging     = false;
         s_nav.was_dragging = false;   /* reset per touch */
+        ESP_LOGI(TAG, "PRESSED x=%d page=%d", p.x, s_nav.current);
     } else if (code == LV_EVENT_PRESSING) {
         int16_t dx = (int16_t)(p.x - s_nav.drag_start_x);
         if (dx < -DRAG_DEADZONE || dx > DRAG_DEADZONE || s_nav.dragging) {
@@ -173,6 +179,9 @@ static void nav_drag_cb(lv_event_t *e) {
             }
             s_nav.drag_last_ms = now_ms;
 
+            if (!s_nav.dragging) {
+                ESP_LOGI(TAG, "DRAG START dx=%d page=%d", dx, s_nav.current);
+            }
             s_nav.dragging     = true;
             s_nav.was_dragging = true;   /* block click-after-swipe */
             /* Pause canvas rendering on garden page during drag */
@@ -191,6 +200,7 @@ static void nav_drag_cb(lv_event_t *e) {
         }
     } else if (code == LV_EVENT_RELEASED) {
         if (!s_nav.dragging) {
+            ESP_LOGI(TAG, "TAP page=%d", s_nav.current);
             /* Short tap — delegate to current page (e.g. garden watering) */
             if (s_nav.defs[s_nav.current] && s_nav.defs[s_nav.current]->on_button) {
                 s_nav.defs[s_nav.current]->on_button(0);
@@ -205,11 +215,15 @@ static void nav_drag_cb(lv_event_t *e) {
         }
 
         int16_t dx = s_nav.drag_offset;
+        ESP_LOGI(TAG, "RELEASED dx=%d page=%d", dx, s_nav.current);
         if (dx < -DRAG_THRESHOLD && s_nav.current < s_nav.count - 1) {
+            ESP_LOGI(TAG, "SNAP to page %d", s_nav.current + 1);
             snap_to_page(s_nav.current + 1);
         } else if (dx > DRAG_THRESHOLD && s_nav.current > 0) {
+            ESP_LOGI(TAG, "SNAP to page %d", s_nav.current - 1);
             snap_to_page(s_nav.current - 1);
         } else {
+            ESP_LOGI(TAG, "SPRING BACK");
             snap_to_page(s_nav.current);  /* spring back */
         }
     }
@@ -227,6 +241,7 @@ static void snap_anim_cb(void *var, int32_t v) {
 static void snap_ready_cb(lv_anim_t *a) {
     (void)a;
     /* NOW switch to the target page — drag_offset is at ±DISP_W or 0 */
+    ESP_LOGI(TAG, "SNAP done, now at page %d", s_snap_target);
     s_nav.current     = s_snap_target;
     s_nav.drag_offset = 0;
     position_pages();
