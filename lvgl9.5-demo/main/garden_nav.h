@@ -23,6 +23,7 @@ void garden_nav_register(int index, const garden_page_def_t *def);
 void garden_nav_go_home(bool animate);
 void garden_nav_tick(uint32_t elapsed_ms);
 void garden_nav_button(uint8_t type);       /* 0=short, 1=long */
+bool garden_nav_was_dragging(void);         /* true if last touch was a drag — pages skip clicks */
 
 /* Reserved for future encoder hardware */
 void garden_nav_encoder(int delta);

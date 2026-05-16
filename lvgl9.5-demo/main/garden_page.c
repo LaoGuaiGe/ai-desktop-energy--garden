@@ -1,4 +1,5 @@
 #include "garden_page.h"
+#include "garden_nav.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -271,6 +272,7 @@ static void spawn_particles(int count) {
 
 static void water_click_cb(lv_event_t *e) {
     (void)e;
+    if (garden_nav_was_dragging()) return;  /* swipe, not tap */
     garden_page_on_button(0);
 }
 

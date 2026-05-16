@@ -22,7 +22,8 @@ static struct {
     int16_t  drag_start_x;
     int16_t  drag_offset;
     bool     dragging;
-    uint32_t drag_last_ms;  /* throttle timer */
+    bool     was_dragging;    /* true after any drag — prevents click-after-swipe */
+    uint32_t drag_last_ms;    /* throttle timer */
 } s_nav;
 
 static int32_t s_anim_dummy;  /* placeholder for lv_anim_set_var */
@@ -110,6 +111,10 @@ void garden_nav_button(uint8_t type) {
     }
 }
 
+bool garden_nav_was_dragging(void) {
+    return s_nav.was_dragging;
+}
+
 void garden_nav_encoder(int delta) {
     (void)delta;
     /* Reserved — no hardware */
@@ -157,6 +162,7 @@ static void nav_drag_cb(lv_event_t *e) {
         s_nav.drag_start_x = p.x;
         s_nav.drag_offset  = 0;
         s_nav.dragging     = false;
+        s_nav.was_dragging = false;   /* reset per touch */
     } else if (code == LV_EVENT_PRESSING) {
         int16_t dx = (int16_t)(p.x - s_nav.drag_start_x);
         if (dx < -DRAG_DEADZONE || dx > DRAG_DEADZONE || s_nav.dragging) {
@@ -167,7 +173,8 @@ static void nav_drag_cb(lv_event_t *e) {
             }
             s_nav.drag_last_ms = now_ms;
 
-            s_nav.dragging = true;
+            s_nav.dragging     = true;
+            s_nav.was_dragging = true;   /* block click-after-swipe */
             /* Pause canvas rendering on garden page during drag */
             if (s_nav.defs[s_nav.current] && s_nav.defs[s_nav.current]->set_active) {
                 s_nav.defs[s_nav.current]->set_active(false);
