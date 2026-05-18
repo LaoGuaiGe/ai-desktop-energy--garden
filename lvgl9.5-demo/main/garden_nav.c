@@ -30,11 +30,12 @@ static struct {
 } s_nav;
 
 static int32_t s_anim_dummy;  /* placeholder for lv_anim_set_var */
-static int     s_snap_target; /* page index to switch to when anim ends */
+static int     s_snap_target = -1; /* page index to switch to when anim ends */
 
 /* ── Forward declarations ── */
 static void position_pages(void);
 static void show_adjacent_pages(void);
+static void set_page_active(int index, bool active);
 static void nav_drag_cb(lv_event_t *e);
 static void snap_to_page(int target);
 static void snap_anim_cb(void *var, int32_t v);
@@ -47,6 +48,7 @@ void garden_nav_init(lv_obj_t *screen) {
     s_nav.screen     = screen;
     s_nav.home_index = GARDEN_NAV_HOME_INDEX;
     s_nav.current    = s_nav.home_index;
+    s_snap_target    = -1;
 
     /* Screen-level styling (was in old build_layout, required for correct rendering) */
     lv_obj_set_style_bg_color(screen, lv_color_hex(0x1A3A1A), 0);
@@ -71,9 +73,14 @@ void garden_nav_register(int index, const garden_page_def_t *def) {
     if (s_nav.objs[index]) {
         ESP_LOGI(TAG, "reg page %d obj=%p name=%s", index, (void*)s_nav.objs[index], def->name);
         lv_obj_add_flag(s_nav.objs[index], LV_OBJ_FLAG_HIDDEN);
-        /* CLICKABLE needed so indev tracks touches that land on this page's
-         * children. The global screen-level LV_EVENT_ALL hook catches all. */
+        /* CLICKABLE makes the page root the touch target for non-interactive
+         * areas. Register drag handling here instead of relying on screen
+         * bubbling, because LVGL child events do not bubble to the screen by
+         * default. */
         lv_obj_add_flag(s_nav.objs[index], LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(s_nav.objs[index], nav_drag_cb, LV_EVENT_PRESSED, NULL);
+        lv_obj_add_event_cb(s_nav.objs[index], nav_drag_cb, LV_EVENT_PRESSING, NULL);
+        lv_obj_add_event_cb(s_nav.objs[index], nav_drag_cb, LV_EVENT_RELEASED, NULL);
     }
 
     position_pages();
@@ -101,6 +108,7 @@ void garden_nav_tick(uint32_t elapsed_ms) {
     /* Tick current page and neighbors only */
     for (int i = 0; i < s_nav.count; i++) {
         if (!s_nav.defs[i] || !s_nav.defs[i]->tick) continue;
+        if (s_nav.dragging || s_snap_target >= 0) continue;
         if (i < s_nav.current - 1 || i > s_nav.current + 1) continue;
         s_nav.defs[i]->tick(elapsed_ms);
     }
@@ -167,6 +175,13 @@ static void show_adjacent_pages(void) {
     }
 }
 
+static void set_page_active(int index, bool active) {
+    if (index < 0 || index >= s_nav.count) return;
+    if (s_nav.defs[index] && s_nav.defs[index]->set_active) {
+        s_nav.defs[index]->set_active(active);
+    }
+}
+
 /* ── Drag handling ── */
 
 static void nav_drag_cb(lv_event_t *e) {
@@ -199,9 +214,7 @@ static void nav_drag_cb(lv_event_t *e) {
             s_nav.dragging     = true;
             s_nav.was_dragging = true;   /* block click-after-swipe */
             /* Pause canvas rendering on garden page during drag */
-            if (s_nav.defs[s_nav.current] && s_nav.defs[s_nav.current]->set_active) {
-                s_nav.defs[s_nav.current]->set_active(false);
-            }
+            set_page_active(s_nav.current, false);
             /* Clamp: at most one page worth of drag in either direction */
             if (dx < -DISP_W) dx = -DISP_W;
             if (dx >  DISP_W) dx =  DISP_W;
@@ -224,9 +237,7 @@ static void nav_drag_cb(lv_event_t *e) {
         s_nav.dragging = false;
 
         /* Resume canvas rendering */
-        if (s_nav.defs[s_nav.current] && s_nav.defs[s_nav.current]->set_active) {
-            s_nav.defs[s_nav.current]->set_active(true);
-        }
+        set_page_active(s_nav.current, true);
 
         int16_t dx = s_nav.drag_offset;
         ESP_LOGI(TAG, "RELEASED dx=%d page=%d", dx, s_nav.current);
@@ -258,15 +269,14 @@ static void snap_ready_cb(lv_anim_t *a) {
     ESP_LOGI(TAG, "SNAP done, now at page %d", s_snap_target);
     s_nav.current     = s_snap_target;
     s_nav.drag_offset = 0;
+    s_snap_target     = -1;
     position_pages();
     show_adjacent_pages();
-    /* Notify new current page it's active */
-    if (s_nav.defs[s_nav.current] && s_nav.defs[s_nav.current]->set_active) {
-        s_nav.defs[s_nav.current]->set_active(true);
-    }
+    set_page_active(s_nav.current, true);
 }
 
 static void snap_to_page(int target) {
+    set_page_active(s_nav.current, false);
     s_snap_target = target;
 
     int16_t from = s_nav.drag_offset;

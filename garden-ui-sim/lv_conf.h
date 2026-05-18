@@ -8,7 +8,7 @@
 
 /* Memory */
 #define LV_MEM_CUSTOM 0
-#define LV_MEM_SIZE   (512 * 1024U)
+#define LV_MEM_SIZE   (2 * 1024U * 1024U)
 
 /* HAL tick — use SDL_GetTicks() */
 #define LV_TICK_CUSTOM                  1

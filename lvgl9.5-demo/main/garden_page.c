@@ -18,6 +18,31 @@
 #define SCENE_IDLE_FRAME_MS   66
 #define SCENE_ACTIVE_FRAME_MS 33
 #define PERF_LOG_INTERVAL_MS  2000
+#define PLOT_COUNT 6
+#define GROWTH_DONE_MS 12000U
+
+typedef enum {
+    PLANT_TOMATO = 0,
+    PLANT_SUNFLOWER,
+    PLANT_PEA,
+    PLANT_MUSHROOM,
+    PLANT_PEPPER,
+    PLANT_CORN,
+    PLANT_COUNT
+} plant_type_t;
+
+typedef struct {
+    const char *name;
+    uint32_t color;
+    uint32_t accent;
+} plant_def_t;
+
+typedef struct {
+    plant_type_t type;
+    uint32_t growth_ms;
+    bool occupied;
+    bool mature;
+} plot_state_t;
 
 static const char *TAG = "garden_page";
 
@@ -66,6 +91,31 @@ static lv_obj_t *s_bar_energy;
 static lv_obj_t *s_label_level;
 static lv_obj_t *s_label_streak;
 static lv_obj_t *s_label_fps;
+static lv_obj_t *s_plot_objs[PLOT_COUNT];
+static lv_obj_t *s_plot_icon_objs[PLOT_COUNT];
+static lv_obj_t *s_plot_label_objs[PLOT_COUNT];
+static lv_obj_t *s_inv_labels[PLANT_COUNT];
+static lv_obj_t *s_drag_icon;
+static lv_obj_t *s_hint_label;
+static lv_obj_t *s_fertilizer_label;
+
+static plot_state_t s_plots[PLOT_COUNT];
+static uint16_t s_inventory[PLANT_COUNT] = { 12, 4, 5, 3, 2, 4 };
+static uint16_t s_fertilizer = 0;
+static plant_type_t s_drag_type = PLANT_TOMATO;
+static bool s_dragging_plant = false;
+static bool s_dragging_fertilizer = false;
+static int8_t s_selected_plot = 0;
+static int8_t s_wet_plot = -1;
+
+static const plant_def_t s_plant_defs[PLANT_COUNT] = {
+    { "TOM", 0xF35D55, 0x7FD36B },
+    { "SUN", 0xFFD166, 0x7A5A1A },
+    { "PEA", 0x66D56F, 0xBDF58B },
+    { "MUS", 0xD8A06A, 0xF2E2C6 },
+    { "PEP", 0xEF3E35, 0xFFC857 },
+    { "CRN", 0xF2C94C, 0x73B85C },
+};
 
 /* Cloud positions */
 static int16_t s_cloud1_x = 80;
@@ -86,8 +136,26 @@ static int16_t s_bird_x = -30, s_bird_y = 60;
 static void build_page(lv_obj_t *parent);
 static void draw_background(void);
 static void draw_scene(void);
+static void draw_plot_scene(void);
+static void draw_plot_plant(int16_t root_x, int16_t base_y, plant_type_t type, uint8_t stage, int8_t sway_px);
 static void spawn_particles(int count);
-/* water handled via garden_page_on_button */
+static void water_plot(int index);
+static void fertilize_plot(int index);
+static lv_obj_t *create_panel(lv_obj_t *parent, int x, int y, int w, int h, uint32_t color);
+static lv_obj_t *create_label(lv_obj_t *parent, const char *text, uint32_t color);
+static void ui_cell(lv_obj_t *parent, int x, int y, int size, uint32_t color);
+static void draw_plant_icon(lv_obj_t *parent, plant_type_t type, int x, int y, int size);
+static void draw_fertilizer_icon(lv_obj_t *parent, int x, int y, int size);
+static void refresh_inventory(void);
+static void refresh_plot(int index);
+static void refresh_all_plots(void);
+static void build_garden_interactions(void);
+static void inventory_event_cb(lv_event_t *e);
+static void fertilizer_event_cb(lv_event_t *e);
+static void plot_event_cb(lv_event_t *e);
+static void harvest_plot(int index);
+static int find_drop_plot(lv_coord_t x, lv_coord_t y);
+static void set_hint(const char *text);
 static inline uint16_t rgb888_to_565(uint32_t c);
 static void fill_rect(int16_t x, int16_t y, int16_t w, int16_t h, uint32_t color, uint8_t alpha);
 
@@ -125,6 +193,21 @@ void garden_page_tick(uint32_t elapsed_ms) {
 
     if (!s_state.active) return;
 
+    for (int i = 0; i < 5; i++) {
+        if (s_plots[i].occupied && !s_plots[i].mature) {
+            uint32_t before = s_plots[i].growth_ms;
+            s_plots[i].growth_ms += elapsed_ms;
+            s_state.dirty = true;
+            if (s_plots[i].growth_ms >= GROWTH_DONE_MS) {
+                s_plots[i].growth_ms = GROWTH_DONE_MS;
+                s_plots[i].mature = true;
+                refresh_plot(i);
+            } else if ((before / 3000U) != (s_plots[i].growth_ms / 3000U)) {
+                refresh_plot(i);
+            }
+        }
+    }
+
     /* Plant animation: 4 frames x 400ms */
     s_state.frame_timer += elapsed_ms;
     if (s_state.frame_timer >= 400) {
@@ -139,7 +222,10 @@ void garden_page_tick(uint32_t elapsed_ms) {
     } else s_state.burst_timer = 0;
     if (s_state.wet_timer > elapsed_ms) {
         s_state.wet_timer -= elapsed_ms; active_anim = true;
-    } else s_state.wet_timer = 0;
+    } else {
+        s_state.wet_timer = 0;
+        s_wet_plot = -1;
+    }
     if (s_state.evolve_timer > elapsed_ms) {
         s_state.evolve_timer -= elapsed_ms; active_anim = true;
     } else s_state.evolve_timer = 0;
@@ -224,22 +310,7 @@ void garden_page_tick(uint32_t elapsed_ms) {
 
 bool garden_page_on_button(uint8_t type) {
     if (type != 0) return false;
-    s_state.energy_x10 += 100;
-    if (s_state.energy_x10 > 1000) s_state.energy_x10 = 1000;
-    lv_bar_set_value(s_bar_energy, s_state.energy_x10 / 10, LV_ANIM_ON);
-    s_state.burst_timer = 1000;
-    s_state.wet_timer   = 0;
-    spawn_particles(8);
-    for (int i = 0; i < 12; i++) {
-        s_state.drops[i].x  = (int16_t)(SCENE_W / 2 - 30 + (i * 5));
-        s_state.drops[i].y  = (int16_t)(20 + (i * 11) % 60);
-        s_state.drops[i].vy = (int16_t)(10 + (i % 4) * 2);
-        s_state.drops[i].active = true;
-    }
-    s_state.dirty = true;
-    if (s_state.energy_x10 >= 1000 && s_state.plant_stage < 5) {
-        s_state.evolve_timer = 800;
-    }
+    set_hint("TAP A GROWING PLOT");
     return true;
 }
 
@@ -294,7 +365,7 @@ static void build_page(lv_obj_t *parent) {
     lv_obj_set_style_pad_row(left, 6, 0);
 
     lv_obj_t *l_title = lv_label_create(left);
-    lv_label_set_text(l_title, "STATUS");
+    lv_label_set_text(l_title, "ENV");
     lv_obj_set_style_text_color(l_title, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_text_font(l_title, &lv_font_montserrat_14, 0);
 
@@ -317,12 +388,12 @@ static void build_page(lv_obj_t *parent) {
     lv_obj_set_style_pad_row(w_card, 2, 0);
 
     lv_obj_t *l_sun = lv_label_create(w_card);
-    lv_label_set_text(l_sun, "* 26 C");
+    lv_label_set_text(l_sun, "OUT 26C");
     lv_obj_set_style_text_color(l_sun, lv_color_hex(0xFFDD44), 0);
     lv_obj_set_style_text_font(l_sun, &lv_font_montserrat_14, 0);
 
     lv_obj_t *l_weather = lv_label_create(w_card);
-    lv_label_set_text(l_weather, "Sunny");
+    lv_label_set_text(l_weather, "SUNNY");
     lv_obj_set_style_text_color(l_weather, lv_color_hex(0xAADDAA), 0);
     lv_obj_set_style_text_font(l_weather, &lv_font_montserrat_14, 0);
 
@@ -338,17 +409,17 @@ static void build_page(lv_obj_t *parent) {
     lv_obj_set_style_pad_row(d_card, 4, 0);
 
     lv_obj_t *l_dev = lv_label_create(d_card);
-    lv_label_set_text(l_dev, "DEV: 2");
+    lv_label_set_text(l_dev, "AIR 24C");
     lv_obj_set_style_text_color(l_dev, lv_color_hex(0xAAFFAA), 0);
     lv_obj_set_style_text_font(l_dev, &lv_font_montserrat_14, 0);
 
     lv_obj_t *l_net = lv_label_create(d_card);
-    lv_label_set_text(l_net, "ONLINE");
+    lv_label_set_text(l_net, "HUM 58%");
     lv_obj_set_style_text_color(l_net, lv_color_hex(0x44FF88), 0);
     lv_obj_set_style_text_font(l_net, &lv_font_montserrat_14, 0);
 
     lv_obj_t *l_hub = lv_label_create(d_card);
-    lv_label_set_text(l_hub, "HUB: 2/3");
+    lv_label_set_text(l_hub, "SOIL --%");
     lv_obj_set_style_text_color(l_hub, lv_color_hex(0xFFDD88), 0);
     lv_obj_set_style_text_font(l_hub, &lv_font_montserrat_14, 0);
 
@@ -362,7 +433,7 @@ static void build_page(lv_obj_t *parent) {
     lv_obj_clear_flag(t_card, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t *l_time = lv_label_create(t_card);
-    lv_label_set_text(l_time, "14:32");
+    lv_label_set_text(l_time, "SENSOR OK");
     lv_obj_set_style_text_color(l_time, lv_color_hex(0xFFFFFF), 0);
     lv_obj_set_style_text_font(l_time, &lv_font_montserrat_14, 0);
     lv_obj_center(l_time);
@@ -499,6 +570,670 @@ static void build_page(lv_obj_t *parent) {
     lv_obj_set_style_text_color(tip, lv_color_hex(0x88AA88), 0);
     lv_obj_set_style_text_font(tip, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_align(tip, LV_TEXT_ALIGN_CENTER, 0);
+
+    build_garden_interactions();
+}
+
+static lv_obj_t *create_panel(lv_obj_t *parent, int x, int y, int w, int h, uint32_t color) {
+    lv_obj_t *obj = lv_obj_create(parent);
+    lv_obj_set_pos(obj, x, y);
+    lv_obj_set_size(obj, w, h);
+    lv_obj_set_style_bg_color(obj, lv_color_hex(color), 0);
+    lv_obj_set_style_border_width(obj, 2, 0);
+    lv_obj_set_style_border_color(obj, lv_color_hex(0x4A7A3A), 0);
+    lv_obj_set_style_radius(obj, 4, 0);
+    lv_obj_set_style_pad_all(obj, 0, 0);
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(obj, LV_OBJ_FLAG_EVENT_BUBBLE);
+    return obj;
+}
+
+static lv_obj_t *create_label(lv_obj_t *parent, const char *text, uint32_t color) {
+    lv_obj_t *label = lv_label_create(parent);
+    lv_label_set_text(label, text);
+    lv_obj_set_style_text_color(label, lv_color_hex(color), 0);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_14, 0);
+    return label;
+}
+
+static void ui_cell(lv_obj_t *parent, int x, int y, int size, uint32_t color) {
+    lv_obj_t *cell = lv_obj_create(parent);
+    lv_obj_set_pos(cell, x, y);
+    lv_obj_set_size(cell, size, size);
+    lv_obj_set_style_bg_color(cell, lv_color_hex(color), 0);
+    lv_obj_set_style_bg_opa(cell, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(cell, 0, 0);
+    lv_obj_set_style_radius(cell, 0, 0);
+    lv_obj_set_style_pad_all(cell, 0, 0);
+    lv_obj_clear_flag(cell, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(cell, LV_OBJ_FLAG_CLICKABLE);
+}
+
+static void draw_plant_icon(lv_obj_t *parent, plant_type_t type, int x, int y, int size) {
+    uint32_t main = s_plant_defs[type].color;
+    uint32_t accent = s_plant_defs[type].accent;
+
+    switch (type) {
+    case PLANT_TOMATO:
+        ui_cell(parent, x + size * 2, y, size, accent);
+        ui_cell(parent, x + size * 3, y + size, size, accent);
+        ui_cell(parent, x + size, y + size, size, main);
+        ui_cell(parent, x + size * 3, y + size, size, main);
+        ui_cell(parent, x, y + size * 2, size, main);
+        ui_cell(parent, x + size, y + size * 2, size, main);
+        ui_cell(parent, x + size * 2, y + size * 2, size, main);
+        ui_cell(parent, x + size * 3, y + size * 2, size, main);
+        ui_cell(parent, x + size * 4, y + size * 2, size, main);
+        ui_cell(parent, x, y + size * 3, size, main);
+        ui_cell(parent, x + size, y + size * 3, size, main);
+        ui_cell(parent, x + size * 2, y + size * 3, size, main);
+        ui_cell(parent, x + size * 3, y + size * 3, size, main);
+        ui_cell(parent, x + size * 4, y + size * 3, size, main);
+        ui_cell(parent, x, y + size * 4, size, main);
+        ui_cell(parent, x + size, y + size * 4, size, main);
+        ui_cell(parent, x + size * 2, y + size * 4, size, main);
+        ui_cell(parent, x + size * 3, y + size * 4, size, main);
+        ui_cell(parent, x + size * 4, y + size * 4, size, main);
+        ui_cell(parent, x + size, y + size * 5, size, main);
+        ui_cell(parent, x + size * 2, y + size * 5, size, main);
+        ui_cell(parent, x + size * 3, y + size * 5, size, main);
+        break;
+    case PLANT_SUNFLOWER:
+        ui_cell(parent, x + size * 2, y, size, main);
+        ui_cell(parent, x + size, y + size, size, main);
+        ui_cell(parent, x + size * 2, y + size, size, 0x17100A);
+        ui_cell(parent, x + size * 3, y + size, size, main);
+        ui_cell(parent, x, y + size * 2, size, main);
+        ui_cell(parent, x + size, y + size * 2, size, 0x17100A);
+        ui_cell(parent, x + size * 2, y + size * 2, size, 0x5A3415);
+        ui_cell(parent, x + size * 3, y + size * 2, size, 0x17100A);
+        ui_cell(parent, x + size * 4, y + size * 2, size, main);
+        ui_cell(parent, x + size, y + size * 3, size, main);
+        ui_cell(parent, x + size * 2, y + size * 3, size, 0x17100A);
+        ui_cell(parent, x + size * 3, y + size * 3, size, main);
+        ui_cell(parent, x + size * 2, y + size * 4, size, 0x5AA35A);
+        break;
+    case PLANT_PEA:
+        ui_cell(parent, x, y + size * 2, size, 0x2F7E3D);
+        ui_cell(parent, x + size, y + size, size, 0x2F7E3D);
+        ui_cell(parent, x + size * 2, y + size, size, 0x2F7E3D);
+        ui_cell(parent, x + size * 3, y + size, size, 0x2F7E3D);
+        ui_cell(parent, x + size * 4, y + size * 2, size, 0x2F7E3D);
+        ui_cell(parent, x + size, y + size * 2, size, main);
+        ui_cell(parent, x + size * 2, y + size * 2, size, accent);
+        ui_cell(parent, x + size * 3, y + size * 2, size, main);
+        ui_cell(parent, x + size, y + size * 3, size, 0x2F7E3D);
+        ui_cell(parent, x + size * 2, y + size * 3, size, 0x2F7E3D);
+        ui_cell(parent, x + size * 3, y + size * 3, size, 0x2F7E3D);
+        break;
+    case PLANT_MUSHROOM:
+        ui_cell(parent, x + size, y, size, main);
+        ui_cell(parent, x + size * 2, y, size, main);
+        ui_cell(parent, x + size * 3, y, size, main);
+        ui_cell(parent, x, y + size, size, main);
+        ui_cell(parent, x + size, y + size, size, 0xF2E2C6);
+        ui_cell(parent, x + size * 2, y + size, size, main);
+        ui_cell(parent, x + size * 3, y + size, size, 0xF2E2C6);
+        ui_cell(parent, x + size * 4, y + size, size, main);
+        ui_cell(parent, x + size, y + size * 2, size, accent);
+        ui_cell(parent, x + size * 2, y + size * 2, size, accent);
+        ui_cell(parent, x + size * 3, y + size * 2, size, accent);
+        break;
+    case PLANT_PEPPER:
+        ui_cell(parent, x + size * 2, y, size, accent);
+        ui_cell(parent, x + size * 2, y + size, size, main);
+        ui_cell(parent, x + size * 3, y + size, size, main);
+        ui_cell(parent, x + size, y + size * 2, size, main);
+        ui_cell(parent, x + size * 2, y + size * 2, size, 0xFF6A55);
+        ui_cell(parent, x + size, y + size * 3, size, main);
+        ui_cell(parent, x, y + size * 4, size, main);
+        ui_cell(parent, x + size, y + size * 4, size, main);
+        ui_cell(parent, x, y + size * 5, size, 0xC82020);
+        break;
+    case PLANT_CORN:
+        ui_cell(parent, x + size * 2, y, size, 0xF7E8A5);
+        ui_cell(parent, x + size, y + size, size, main);
+        ui_cell(parent, x + size * 2, y + size, size, 0xFFE27A);
+        ui_cell(parent, x + size * 3, y + size, size, main);
+        ui_cell(parent, x + size, y + size * 2, size, 0xFFE27A);
+        ui_cell(parent, x + size * 2, y + size * 2, size, main);
+        ui_cell(parent, x + size * 3, y + size * 2, size, 0xFFE27A);
+        ui_cell(parent, x, y + size * 3, size, 0x73B85C);
+        ui_cell(parent, x + size, y + size * 3, size, main);
+        ui_cell(parent, x + size * 2, y + size * 3, size, 0xFFE27A);
+        ui_cell(parent, x + size * 3, y + size * 3, size, main);
+        ui_cell(parent, x + size * 4, y + size * 3, size, 0x73B85C);
+        ui_cell(parent, x, y + size * 4, size, 0x5B9F47);
+        ui_cell(parent, x + size * 4, y + size * 4, size, 0x5B9F47);
+        break;
+    default:
+        break;
+    }
+}
+
+static void draw_fertilizer_icon(lv_obj_t *parent, int x, int y, int size) {
+    ui_cell(parent, x + size, y, size, 0xB98A4A);
+    ui_cell(parent, x + size * 2, y, size, 0xD8B16A);
+    ui_cell(parent, x, y + size, size, 0x7A4A24);
+    ui_cell(parent, x + size, y + size, size, 0xB98A4A);
+    ui_cell(parent, x + size * 2, y + size, size, 0xB98A4A);
+    ui_cell(parent, x + size * 3, y + size, size, 0x7A4A24);
+    ui_cell(parent, x, y + size * 2, size, 0x6A3A1A);
+    ui_cell(parent, x + size, y + size * 2, size, 0x8A5A2A);
+    ui_cell(parent, x + size * 2, y + size * 2, size, 0x8A5A2A);
+    ui_cell(parent, x + size * 3, y + size * 2, size, 0x6A3A1A);
+    ui_cell(parent, x + size, y + size * 3, size, 0x53F0BA);
+    ui_cell(parent, x + size * 2, y + size * 3, size, 0x2AA86A);
+    ui_cell(parent, x + size * 3, y + size * 3, size, 0x53F0BA);
+}
+
+static void refresh_inventory(void) {
+    for (int i = 0; i < PLANT_COUNT; i++) {
+        if (!s_inv_labels[i]) continue;
+        char buf[16];
+        snprintf(buf, sizeof(buf), "x%u", (unsigned)s_inventory[i]);
+        lv_label_set_text(s_inv_labels[i], buf);
+    }
+    if (s_fertilizer_label) {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "x%u", (unsigned)s_fertilizer);
+        lv_label_set_text(s_fertilizer_label, buf);
+    }
+}
+
+static void refresh_plot(int index) {
+    if (index < 0 || index >= PLOT_COUNT || !s_plot_objs[index]) return;
+
+    if (s_plot_icon_objs[index]) {
+        lv_obj_delete(s_plot_icon_objs[index]);
+        s_plot_icon_objs[index] = NULL;
+    }
+
+    s_state.dirty = true;
+}
+
+static void refresh_all_plots(void) {
+    for (int i = 0; i < PLOT_COUNT; i++) refresh_plot(i);
+}
+
+static void build_garden_interactions(void) {
+    for (int i = 0; i < PLOT_COUNT; i++) {
+        s_plots[i].occupied = false;
+        s_plots[i].mature = false;
+        s_plots[i].growth_ms = 0;
+        s_plots[i].type = PLANT_TOMATO;
+    }
+
+    for (int i = 0; i < PLOT_COUNT; i++) {
+        int x = SCENE_X + 26 + i * 142;
+        int y = 292;
+        lv_obj_t *plot = create_panel(s_page, x, y, 126, 116, 0x000000);
+        s_plot_objs[i] = plot;
+        lv_obj_set_style_bg_opa(plot, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(plot, 0, 0);
+        lv_obj_add_flag(plot, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(plot, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_add_event_cb(plot, plot_event_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)i);
+    }
+
+    lv_obj_t *right = create_panel(s_page, SCENE_X + SCENE_W, 0, RIGHT_W, DISP_H, 0x203A22);
+    lv_obj_set_style_border_side(right, LV_BORDER_SIDE_LEFT, 0);
+
+    lv_obj_t *title = create_label(right, "HARVEST BOX", 0xFFFFFF);
+    lv_obj_set_pos(title, 16, 16);
+    lv_obj_t *energy = create_label(right, "ENERGY 45/100", 0xAAFFAA);
+    lv_obj_set_pos(energy, 16, 42);
+
+    lv_obj_t *fert_slot = create_panel(right, 148, 34, 88, 38, 0x132817);
+    lv_obj_add_flag(fert_slot, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_clear_flag(fert_slot, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_add_event_cb(fert_slot, fertilizer_event_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(fert_slot, fertilizer_event_cb, LV_EVENT_PRESSING, NULL);
+    lv_obj_add_event_cb(fert_slot, fertilizer_event_cb, LV_EVENT_RELEASED, NULL);
+    draw_fertilizer_icon(fert_slot, 8, 6, 6);
+    s_fertilizer_label = create_label(fert_slot, "x0", 0xFFD166);
+    lv_obj_align(s_fertilizer_label, LV_ALIGN_RIGHT_MID, -8, 0);
+
+    for (int i = 0; i < PLANT_COUNT; i++) {
+        int col = i % 3;
+        int row = i / 3;
+        int x = 16 + col * 78;
+        int y = 82 + row * 86;
+        lv_obj_t *slot = create_panel(right, x, y, 66, 74, 0x132817);
+        lv_obj_add_flag(slot, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_clear_flag(slot, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_add_event_cb(slot, inventory_event_cb, LV_EVENT_PRESSED, (void *)(uintptr_t)i);
+        lv_obj_add_event_cb(slot, inventory_event_cb, LV_EVENT_PRESSING, (void *)(uintptr_t)i);
+        lv_obj_add_event_cb(slot, inventory_event_cb, LV_EVENT_RELEASED, (void *)(uintptr_t)i);
+
+        draw_plant_icon(slot, (plant_type_t)i, 12, 6, 8);
+        lv_obj_t *name = create_label(slot, s_plant_defs[i].name, 0xD8F7D8);
+        lv_obj_align(name, LV_ALIGN_BOTTOM_LEFT, 6, -18);
+        s_inv_labels[i] = create_label(slot, "x0", 0xFFD166);
+        lv_obj_align(s_inv_labels[i], LV_ALIGN_BOTTOM_RIGHT, -6, -2);
+    }
+
+    s_hint_label = create_label(right, "DRAG TO SOIL OR COMPOST", 0x88CC88);
+    lv_obj_set_pos(s_hint_label, 16, 276);
+    lv_obj_t *rule = create_label(right, "HARVEST +2\nCOMPOST +1 FERT\nDRAG FERT TO BOOST", 0xA8BFA8);
+    lv_obj_set_pos(rule, 16, 312);
+
+    s_drag_icon = lv_obj_create(s_page);
+    lv_obj_set_size(s_drag_icon, 54, 54);
+    lv_obj_set_style_bg_color(s_drag_icon, lv_color_hex(0x102128), 0);
+    lv_obj_set_style_bg_opa(s_drag_icon, LV_OPA_80, 0);
+    lv_obj_set_style_border_width(s_drag_icon, 2, 0);
+    lv_obj_set_style_border_color(s_drag_icon, lv_color_hex(0xEAFBF6), 0);
+    lv_obj_set_style_radius(s_drag_icon, 4, 0);
+    lv_obj_set_style_pad_all(s_drag_icon, 0, 0);
+    lv_obj_clear_flag(s_drag_icon, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_drag_icon, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(s_drag_icon, LV_OBJ_FLAG_HIDDEN);
+
+    refresh_inventory();
+    refresh_all_plots();
+}
+
+static void inventory_event_cb(lv_event_t *e) {
+    lv_event_stop_bubbling(e);
+    lv_event_stop_processing(e);
+
+    plant_type_t type = (plant_type_t)(uintptr_t)lv_event_get_user_data(e);
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_indev_active();
+    lv_point_t p;
+    if (!indev) return;
+    lv_indev_get_point(indev, &p);
+
+    if (code == LV_EVENT_PRESSED) {
+        if (s_inventory[type] == 0) {
+            set_hint("NO STOCK");
+            return;
+        }
+        s_drag_type = type;
+        s_dragging_plant = true;
+        lv_obj_clean(s_drag_icon);
+        draw_plant_icon(s_drag_icon, type, 12, 10, 10);
+        lv_obj_set_pos(s_drag_icon, p.x - 27, p.y - 27);
+        lv_obj_clear_flag(s_drag_icon, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_drag_icon);
+        set_hint("DROP ON SOIL");
+    } else if (code == LV_EVENT_PRESSING && s_dragging_plant) {
+        lv_obj_set_pos(s_drag_icon, p.x - 27, p.y - 27);
+    } else if (code == LV_EVENT_RELEASED && s_dragging_plant) {
+        int plot = find_drop_plot(p.x, p.y);
+        lv_obj_add_flag(s_drag_icon, LV_OBJ_FLAG_HIDDEN);
+        s_dragging_plant = false;
+
+        if (plot < 0) {
+            set_hint("DROP MISSED");
+            return;
+        }
+        s_selected_plot = (int8_t)plot;
+        if (plot == 5) {
+            s_inventory[type]--;
+            s_fertilizer++;
+            refresh_inventory();
+            set_hint("+1 FERTILIZER");
+            return;
+        }
+        if (s_plots[plot].occupied) {
+            set_hint("PLOT FULL");
+            return;
+        }
+        s_inventory[type]--;
+        s_plots[plot].occupied = true;
+        s_plots[plot].mature = false;
+        s_plots[plot].growth_ms = 0;
+        s_plots[plot].type = type;
+        s_selected_plot = (int8_t)plot;
+        refresh_inventory();
+        refresh_plot(plot);
+        set_hint("PLANTED");
+    }
+}
+
+static void fertilizer_event_cb(lv_event_t *e) {
+    lv_event_stop_bubbling(e);
+    lv_event_stop_processing(e);
+
+    lv_event_code_t code = lv_event_get_code(e);
+    lv_indev_t *indev = lv_indev_active();
+    lv_point_t p;
+    if (!indev) return;
+    lv_indev_get_point(indev, &p);
+
+    if (code == LV_EVENT_PRESSED) {
+        if (s_fertilizer == 0) {
+            set_hint("NO FERTILIZER");
+            return;
+        }
+        s_dragging_fertilizer = true;
+        lv_obj_clean(s_drag_icon);
+        draw_fertilizer_icon(s_drag_icon, 10, 10, 8);
+        lv_obj_set_pos(s_drag_icon, p.x - 27, p.y - 27);
+        lv_obj_clear_flag(s_drag_icon, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_drag_icon);
+        set_hint("DROP FERT ON CROP");
+    } else if (code == LV_EVENT_PRESSING && s_dragging_fertilizer) {
+        lv_obj_set_pos(s_drag_icon, p.x - 27, p.y - 27);
+    } else if (code == LV_EVENT_RELEASED && s_dragging_fertilizer) {
+        int plot = find_drop_plot(p.x, p.y);
+        lv_obj_add_flag(s_drag_icon, LV_OBJ_FLAG_HIDDEN);
+        s_dragging_fertilizer = false;
+
+        if (plot < 0) {
+            set_hint("FERT MISSED");
+            return;
+        }
+        fertilize_plot(plot);
+    }
+}
+
+static void plot_event_cb(lv_event_t *e) {
+    lv_event_stop_bubbling(e);
+
+    int index = (int)(uintptr_t)lv_event_get_user_data(e);
+    if (index < 0 || index >= PLOT_COUNT) return;
+    s_selected_plot = (int8_t)index;
+    if (index == 5) {
+        set_hint("COMPOST POOL");
+        return;
+    }
+    if (s_plots[index].occupied && s_plots[index].mature) {
+        harvest_plot(index);
+    } else if (s_plots[index].occupied) {
+        water_plot(index);
+    } else {
+        set_hint("DROP PLANT HERE");
+    }
+}
+
+static void water_plot(int index) {
+    if (index < 0 || index >= 5 || !s_plots[index].occupied || s_plots[index].mature) return;
+
+    s_selected_plot = (int8_t)index;
+    s_wet_plot = (int8_t)index;
+    s_state.energy_x10 += 100;
+    if (s_state.energy_x10 > 1000) s_state.energy_x10 = 1000;
+    lv_bar_set_value(s_bar_energy, s_state.energy_x10 / 10, LV_ANIM_ON);
+
+    s_plots[index].growth_ms += 900;
+    if (s_plots[index].growth_ms >= GROWTH_DONE_MS) {
+        s_plots[index].growth_ms = GROWTH_DONE_MS;
+        s_plots[index].mature = true;
+        s_state.evolve_timer = 800;
+    }
+
+    int16_t root_x = (int16_t)(89 + index * 142);
+    for (int i = 0; i < 12; i++) {
+        s_state.drops[i].x = (int16_t)(root_x - 34 + (i * 6));
+        s_state.drops[i].y = (int16_t)(170 + (i * 9) % 70);
+        s_state.drops[i].vy = (int16_t)(10 + (i % 4) * 2);
+        s_state.drops[i].active = true;
+    }
+    s_state.wet_timer = 1200;
+    s_state.burst_timer = 700;
+    if (s_state.energy_x10 >= 1000) s_state.evolve_timer = 800;
+    spawn_particles(5);
+    refresh_plot(index);
+    set_hint(s_plots[index].mature ? "READY TO HARVEST" : "WATERED");
+}
+
+static void fertilize_plot(int index) {
+    if (index < 0 || index >= 5) {
+        set_hint(index == 5 ? "COMPOST MAKES FERT" : "FERT MISSED");
+        return;
+    }
+    s_selected_plot = (int8_t)index;
+    if (s_fertilizer == 0) {
+        set_hint("NO FERTILIZER");
+        return;
+    }
+    if (!s_plots[index].occupied) {
+        set_hint("NO CROP HERE");
+        return;
+    }
+    if (s_plots[index].mature) {
+        set_hint("ALREADY MATURE");
+        return;
+    }
+
+    s_fertilizer--;
+    s_plots[index].growth_ms += GROWTH_DONE_MS / 3U;
+    if (s_plots[index].growth_ms >= GROWTH_DONE_MS) {
+        s_plots[index].growth_ms = GROWTH_DONE_MS;
+        s_plots[index].mature = true;
+    }
+    s_state.evolve_timer = 800;
+    s_state.dirty = true;
+    refresh_inventory();
+    refresh_plot(index);
+    spawn_particles(8);
+    set_hint(s_plots[index].mature ? "FERT DONE" : "FERT BOOST");
+}
+
+static void harvest_plot(int index) {
+    plant_type_t type = s_plots[index].type;
+    s_inventory[type] += 2;
+    s_plots[index].occupied = false;
+    s_plots[index].mature = false;
+    s_plots[index].growth_ms = 0;
+    refresh_inventory();
+    refresh_plot(index);
+    set_hint("HARVEST +2");
+    spawn_particles(8);
+    s_state.burst_timer = 1000;
+    s_state.dirty = true;
+}
+
+static int find_drop_plot(lv_coord_t x, lv_coord_t y) {
+    for (int i = 0; i < PLOT_COUNT; i++) {
+        lv_obj_t *plot = s_plot_objs[i];
+        if (!plot) continue;
+        lv_coord_t px = lv_obj_get_x(plot);
+        lv_coord_t py = lv_obj_get_y(plot);
+        lv_coord_t pw = lv_obj_get_width(plot);
+        lv_coord_t ph = lv_obj_get_height(plot);
+        if (x >= px && x < px + pw && y >= py && y < py + ph) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void set_hint(const char *text) {
+    if (s_hint_label) lv_label_set_text(s_hint_label, text);
+}
+
+static void draw_plot_scene(void) {
+    int8_t sway[] = { -3, -1, 3, 1 };
+
+    for (int i = 0; i < PLOT_COUNT; i++) {
+        int16_t root_x = (int16_t)(89 + i * 142);
+        int16_t base_y = (int16_t)(SCENE_H - 60);
+
+        if (i == 5) {
+            fill_rect(root_x - 38, base_y - 20, 76, 18, 0x5A3A1A, 230);
+            fill_rect(root_x - 32, base_y - 26, 64, 10, 0x6B4A2A, 230);
+            fill_rect(root_x - 24, base_y - 34, 16, 12, 0x8A6A3A, 220);
+            fill_rect(root_x - 4,  base_y - 38, 18, 14, 0xA0703A, 220);
+            fill_rect(root_x + 18, base_y - 30, 14, 10, 0x6F552E, 220);
+            fill_rect(root_x - 28, base_y - 44, 8, 8, 0x53F0BA, 120);
+            fill_rect(root_x + 26, base_y - 48, 6, 6, 0x53F0BA, 100);
+            continue;
+        }
+
+        fill_rect(root_x - 34, base_y - 4, 68, 6, 0x7A5A0A, 230);
+        fill_rect(root_x - 26, base_y - 10, 52, 8, 0x6A4A0A, 230);
+        fill_rect(root_x - 18, base_y - 14, 36, 5, 0x5A3A0A, 220);
+        fill_rect(root_x - 42, base_y - 8, 8, 8, 0x4A9A2A, 220);
+        fill_rect(root_x + 34, base_y - 10, 8, 10, 0x5AAA3A, 220);
+        if (s_selected_plot == i) {
+            fill_rect(root_x - 44, base_y - 2, 88, 3, 0xFFD166, 150);
+            fill_rect(root_x - 34, base_y - 6, 68, 2, 0xFFF2A8, 80);
+        }
+
+        if (!s_plots[i].occupied) continue;
+
+        uint8_t stage = s_plots[i].mature ? 5 : (uint8_t)(s_plots[i].growth_ms * 5U / GROWTH_DONE_MS);
+        if (stage > 5) stage = 5;
+        draw_plot_plant(root_x, base_y, s_plots[i].type, stage, sway[(s_state.plant_frame + i) % 4]);
+
+        if (s_plots[i].mature) {
+            uint8_t pulse = (uint8_t)(90 + s_state.plant_frame * 35);
+            fill_rect(root_x - 34, base_y - 132, 68, 4, 0xFFD166, pulse);
+            fill_rect(root_x - 42, base_y - 126, 84, 98, 0xFFF2A8, (uint8_t)(pulse / 6));
+        }
+    }
+}
+
+static void draw_plot_plant(int16_t root_x, int16_t base_y, plant_type_t type, uint8_t stage, int8_t sway_px) {
+    uint32_t main = s_plant_defs[type].color;
+    uint32_t accent = s_plant_defs[type].accent;
+    int16_t sx = (int16_t)(root_x + sway_px);
+
+    switch (stage) {
+    case 0:
+        fill_rect(root_x - 5, base_y - 18, 10, 7, 0x8B6914, 255);
+        fill_rect(root_x - 2, base_y - 22, 4, 4, accent, 230);
+        break;
+    case 1:
+        fill_rect(root_x - 3, base_y - 30, 6, 20, 0x5A9A2A, 255);
+        fill_rect(root_x - 12, base_y - 34, 10, 7, 0x44CC44, 255);
+        fill_rect(root_x + 3, base_y - 36, 9, 7, 0x55DD55, 255);
+        break;
+    case 2:
+        fill_rect(root_x - 4, base_y - 58, 8, 48, 0x4A8A1A, 255);
+        fill_rect(root_x - 4 + sway_px / 4, base_y - 64, 8, 12, 0x5A9A2A, 255);
+        fill_rect(root_x - 24 + sway_px / 3, base_y - 50, 22, 10, 0x44CC44, 255);
+        fill_rect(root_x + 4 + sway_px / 3, base_y - 46, 22, 10, 0x44CC44, 255);
+        fill_rect(root_x - 6 + sway_px / 2, base_y - 72, 12, 10, 0x88DD88, 255);
+        break;
+    case 3:
+        fill_rect(root_x - 5, base_y - 44, 10, 34, 0x4A8A1A, 255);
+        fill_rect(root_x - 5 + sway_px / 4, base_y - 78, 10, 34, 0x5A9A2A, 255);
+        fill_rect(root_x - 5 + sway_px / 2, base_y - 112, 10, 34, 0x5A9A2A, 255);
+        fill_rect(root_x - 4 + sway_px * 3 / 4, base_y - 134, 8, 24, 0x6AAA2A, 255);
+        fill_rect(sx - 40, base_y - 92, 34, 15, 0x44CC44, 255);
+        fill_rect(sx - 40, base_y - 92, 13, 11, 0x228822, 255);
+        fill_rect(sx + 6,  base_y - 76, 34, 15, 0x44CC44, 255);
+        fill_rect(sx + 28, base_y - 76, 13, 11, 0x228822, 255);
+        fill_rect(sx - 30, base_y - 114, 26, 11, 0x55DD55, 255);
+        fill_rect(sx + 10, base_y - 108, 22, 9, 0x55DD55, 255);
+        fill_rect(sx - 10, base_y - 148, 20, 20, accent, 255);
+        fill_rect(sx - 5, base_y - 152, 10, 7, 0xAAEEAA, 190);
+        break;
+    case 4:
+        draw_plot_plant(root_x, base_y, type, 3, sway_px);
+        if (type == PLANT_MUSHROOM) {
+            fill_rect(sx - 26, base_y - 76, 52, 20, main, 240);
+            fill_rect(sx - 14, base_y - 56, 28, 24, accent, 240);
+        } else if (type == PLANT_PEA) {
+            fill_rect(sx - 32, base_y - 148, 64, 14, 0x2F7E3D, 255);
+            fill_rect(sx - 22, base_y - 144, 12, 12, main, 255);
+            fill_rect(sx - 4, base_y - 144, 12, 12, accent, 255);
+            fill_rect(sx + 14, base_y - 144, 12, 12, main, 255);
+        } else if (type == PLANT_TOMATO) {
+            int16_t tx = (int16_t)(sx - 25);
+            int16_t ty = (int16_t)(base_y - 176);
+            int16_t q = 10;
+            fill_rect(tx + q * 2, ty, q, q, accent, 255);
+            fill_rect(tx + q * 3, ty + q, q, q, accent, 255);
+            fill_rect(tx + q, ty + q, q, q, main, 255);
+            fill_rect(tx + q * 3, ty + q, q, q, main, 255);
+            fill_rect(tx, ty + q * 2, q, q, main, 255);
+            fill_rect(tx + q, ty + q * 2, q, q, main, 255);
+            fill_rect(tx + q * 2, ty + q * 2, q, q, main, 255);
+            fill_rect(tx + q * 3, ty + q * 2, q, q, main, 255);
+            fill_rect(tx + q * 4, ty + q * 2, q, q, main, 255);
+            fill_rect(tx, ty + q * 3, q, q, main, 255);
+            fill_rect(tx + q, ty + q * 3, q, q, main, 255);
+            fill_rect(tx + q * 2, ty + q * 3, q, q, main, 255);
+            fill_rect(tx + q * 3, ty + q * 3, q, q, main, 255);
+            fill_rect(tx + q * 4, ty + q * 3, q, q, main, 255);
+            fill_rect(tx, ty + q * 4, q, q, main, 255);
+            fill_rect(tx + q, ty + q * 4, q, q, main, 255);
+            fill_rect(tx + q * 2, ty + q * 4, q, q, main, 255);
+            fill_rect(tx + q * 3, ty + q * 4, q, q, main, 255);
+            fill_rect(tx + q * 4, ty + q * 4, q, q, main, 255);
+            fill_rect(tx + q, ty + q * 5, q, q, main, 255);
+            fill_rect(tx + q * 2, ty + q * 5, q, q, main, 255);
+            fill_rect(tx + q * 3, ty + q * 5, q, q, main, 255);
+        } else {
+            fill_rect(sx - 26, base_y - 164, 18, 18, main, 240);
+            fill_rect(sx + 8, base_y - 164, 18, 18, main, 240);
+            fill_rect(sx - 8, base_y - 184, 18, 18, main, 255);
+            fill_rect(sx - 8, base_y - 146, 18, 18, main, 230);
+            fill_rect(sx - 15, base_y - 154, 30, 28, accent, 230);
+        }
+        break;
+    default:
+        if (type != PLANT_MUSHROOM) draw_plot_plant(root_x, base_y, type, 3, sway_px);
+        if (type == PLANT_TOMATO) {
+            int16_t tx = (int16_t)(sx - 30);
+            int16_t ty = (int16_t)(base_y - 188);
+            int16_t q = 12;
+            fill_rect(tx + q * 2, ty, q, q, accent, 255);
+            fill_rect(tx + q * 3, ty + q, q, q, accent, 255);
+            fill_rect(tx + q, ty + q, q, q, main, 255);
+            fill_rect(tx + q * 3, ty + q, q, q, main, 255);
+            fill_rect(tx, ty + q * 2, q, q, main, 255);
+            fill_rect(tx + q, ty + q * 2, q, q, main, 255);
+            fill_rect(tx + q * 2, ty + q * 2, q, q, main, 255);
+            fill_rect(tx + q * 3, ty + q * 2, q, q, main, 255);
+            fill_rect(tx + q * 4, ty + q * 2, q, q, main, 255);
+            fill_rect(tx, ty + q * 3, q, q, main, 255);
+            fill_rect(tx + q, ty + q * 3, q, q, main, 255);
+            fill_rect(tx + q * 2, ty + q * 3, q, q, main, 255);
+            fill_rect(tx + q * 3, ty + q * 3, q, q, main, 255);
+            fill_rect(tx + q * 4, ty + q * 3, q, q, main, 255);
+            fill_rect(tx, ty + q * 4, q, q, main, 255);
+            fill_rect(tx + q, ty + q * 4, q, q, main, 255);
+            fill_rect(tx + q * 2, ty + q * 4, q, q, main, 255);
+            fill_rect(tx + q * 3, ty + q * 4, q, q, main, 255);
+            fill_rect(tx + q * 4, ty + q * 4, q, q, main, 255);
+            fill_rect(tx + q, ty + q * 5, q, q, main, 255);
+            fill_rect(tx + q * 2, ty + q * 5, q, q, main, 255);
+            fill_rect(tx + q * 3, ty + q * 5, q, q, main, 255);
+        } else if (type == PLANT_SUNFLOWER) {
+            fill_rect(sx - 26, base_y - 174, 52, 52, main, 255);
+            fill_rect(sx - 16, base_y - 164, 32, 32, 0x17100A, 255);
+            fill_rect(sx - 8, base_y - 156, 16, 16, 0x5A3415, 255);
+        } else if (type == PLANT_MUSHROOM) {
+            fill_rect(sx - 34, base_y - 82, 68, 26, main, 255);
+            fill_rect(sx - 22, base_y - 56, 44, 34, accent, 255);
+            fill_rect(sx - 22, base_y - 74, 8, 8, 0xF2E2C6, 255);
+            fill_rect(sx + 12, base_y - 72, 8, 8, 0xF2E2C6, 255);
+        } else if (type == PLANT_PEA) {
+            fill_rect(sx - 40, base_y - 150, 80, 14, 0x2F7E3D, 255);
+            fill_rect(sx - 34, base_y - 136, 68, 14, 0x2F7E3D, 255);
+            fill_rect(sx - 26, base_y - 144, 14, 14, main, 255);
+            fill_rect(sx - 4,  base_y - 144, 14, 14, accent, 255);
+            fill_rect(sx + 18, base_y - 144, 14, 14, main, 255);
+        } else if (type == PLANT_PEPPER) {
+            fill_rect(sx + 4, base_y - 178, 8, 10, accent, 255);
+            fill_rect(sx - 4, base_y - 168, 18, 18, main, 255);
+            fill_rect(sx - 10, base_y - 150, 18, 22, main, 255);
+            fill_rect(sx - 18, base_y - 128, 16, 20, main, 255);
+            fill_rect(sx - 26, base_y - 108, 14, 14, 0xC82020, 255);
+        } else if (type == PLANT_CORN) {
+            fill_rect(sx - 8, base_y - 184, 16, 10, 0xF7E8A5, 255);
+            fill_rect(sx - 18, base_y - 174, 36, 58, 0xF2C94C, 255);
+            fill_rect(sx - 10, base_y - 164, 8, 8, 0xFFE27A, 255);
+            fill_rect(sx + 4, base_y - 154, 8, 8, 0xFFE27A, 255);
+            fill_rect(sx - 10, base_y - 140, 8, 8, 0xFFE27A, 255);
+            fill_rect(sx - 34, base_y - 142, 18, 44, 0x73B85C, 230);
+            fill_rect(sx + 16, base_y - 142, 18, 44, 0x73B85C, 230);
+        } else {
+            fill_rect(sx - 22, base_y - 164, 18, 18, main, 255);
+            fill_rect(sx + 6,  base_y - 162, 18, 18, main, 255);
+            fill_rect(sx - 8,  base_y - 184, 18, 18, main, 255);
+            fill_rect(sx - 8,  base_y - 132, 18, 18, main, 240);
+            fill_rect(sx - 14, base_y - 154, 28, 26, accent, 230);
+        }
+        break;
+    }
 }
 
 /* ── Pixel rendering ── */
@@ -673,9 +1408,11 @@ static void draw_scene(void) {
     fill_rect(c3x, 80, 30, 10, 0xFFFFFF, 200);
     fill_rect(c3x + 6, 72, 20, 14, 0xFFFFFF, 200);
 
-    /* Plant (stages 0-5) */
-    int8_t  sway[]  = {-4, -1, 4, 1};
+    draw_plot_scene();
+    /* The old single showcase plant was removed; plots are LVGL objects above the background. */
+#if 0
     int16_t root_x  = (int16_t)(SCENE_W / 2);
+    int8_t  sway[]  = {-4, -1, 4, 1};
     int16_t sway_px = sway[s_state.plant_frame];
     int16_t sx = (int16_t)(root_x + sway_px);
 
@@ -762,6 +1499,7 @@ static void draw_scene(void) {
         }
         break;
     }
+#endif
 
     /* Butterfly */
     s_butterfly_frame = (uint8_t)((s_butterfly_frame + 1) % 4);
@@ -798,18 +1536,12 @@ static void draw_scene(void) {
     }
 
     /* Wet soil */
-    if (s_state.wet_timer > 0) {
+    if (s_state.wet_timer > 0 && s_wet_plot >= 0 && s_wet_plot < 5) {
+        int8_t wet_plot = s_wet_plot >= 0 ? s_wet_plot : s_selected_plot;
+        int16_t wet_x = (int16_t)(89 + wet_plot * 142);
         uint8_t wet_alpha = (uint8_t)(s_state.wet_timer > 1000 ? 80 : s_state.wet_timer * 80 / 1000);
-        fill_rect(root_x - 40, base_y + 2, 80, 12, 0x3A2A00, wet_alpha);
-        fill_rect(root_x - 30, base_y - 2, 60, 6, 0x4A3A0A, (uint8_t)(wet_alpha / 2));
-    }
-
-    /* Plant shadow */
-    {
-        int8_t  sw[] = {-4, -1, 4, 1};
-        int16_t shadow_off = (int16_t)(sw[s_state.plant_frame] * 2);
-        fill_rect(root_x - 20 + shadow_off, base_y + 4, 50, 6, 0x000000, 30);
-        fill_rect(root_x - 14 + shadow_off, base_y + 2, 38, 4, 0x000000, 20);
+        fill_rect(wet_x - 40, base_y + 2, 80, 12, 0x3A2A00, wet_alpha);
+        fill_rect(wet_x - 30, base_y - 2, 60, 6, 0x4A3A0A, (uint8_t)(wet_alpha / 2));
     }
 
     /* Foreground grass */
@@ -827,21 +1559,23 @@ static void draw_scene(void) {
     fill_rect(SCENE_W - 37, base_y - 24, 8, 4, 0xFFCC66, 255);
 
     /* Evolution flash */
-    if (s_state.evolve_timer > 0) {
+    if (s_state.evolve_timer > 0 && s_selected_plot >= 0 && s_selected_plot < 5) {
+        int16_t flash_x = (int16_t)(89 + s_selected_plot * 142);
         uint8_t flash = (uint8_t)(s_state.evolve_timer > 400
                         ? (s_state.evolve_timer - 400) * 120 / 400
                         : s_state.evolve_timer * 120 / 400);
-        fill_rect(root_x - 50, base_y - 175, 100, 5, 0xFFFFFF, (uint8_t)(flash * 2 / 3));
-        fill_rect(root_x - 55, base_y - 170, 110, 150, 0xFFFFFF, flash);
-        fill_rect(root_x - 50, base_y - 20, 100, 5, 0xFFFFFF, (uint8_t)(flash * 2 / 3));
-        fill_rect(root_x - 30, base_y - 150, 60, 110, 0xFFFFFF, (uint8_t)(flash * 3 / 4));
+        fill_rect(flash_x - 50, base_y - 175, 100, 5, 0xFFFFFF, (uint8_t)(flash * 2 / 3));
+        fill_rect(flash_x - 55, base_y - 170, 110, 150, 0xFFFFFF, flash);
+        fill_rect(flash_x - 50, base_y - 20, 100, 5, 0xFFFFFF, (uint8_t)(flash * 2 / 3));
+        fill_rect(flash_x - 30, base_y - 150, 60, 110, 0xFFFFFF, (uint8_t)(flash * 3 / 4));
     }
 
     /* Energy bar full glow */
-    if (s_state.energy_x10 >= 1000) {
+    if (s_state.energy_x10 >= 1000 && s_selected_plot >= 0 && s_selected_plot < 5) {
+        int16_t glow_x = (int16_t)(89 + s_selected_plot * 142);
         uint8_t pulse = (uint8_t)(80 + (s_state.plant_frame * 30));
-        fill_rect(root_x - 30, base_y - 180, 60, 4, 0xFFDD44, pulse);
-        fill_rect(root_x - 20, base_y - 185, 40, 3, 0xFFDD44, (uint8_t)(pulse / 2));
+        fill_rect(glow_x - 30, base_y - 180, 60, 4, 0xFFDD44, pulse);
+        fill_rect(glow_x - 20, base_y - 185, 40, 3, 0xFFDD44, (uint8_t)(pulse / 2));
     }
 
     lv_obj_invalidate(s_canvas_scene);
